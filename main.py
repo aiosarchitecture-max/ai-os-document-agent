@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_1_PATCH_NO_CREATE"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_2_APPEND_NOTE"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -19,7 +19,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-app = FastAPI(title=APP_NAME, version="0.1.1")
+app = FastAPI(title=APP_NAME, version="0.2.0")
 
 
 class WriteRequest(BaseModel):
@@ -86,7 +86,7 @@ def _now_iso() -> str:
 
 
 def _safe_query_string(value: str) -> str:
-    return value.replace("'", "\'")
+    return value.replace("'", "\\'")
 
 
 def _find_file_by_name(drive_service, name: str, mime_type: str) -> dict:
@@ -134,13 +134,20 @@ def _append_to_existing_doc(document_id: str, text: str) -> None:
     ).execute()
 
 
-def _append_change_log_row(spreadsheet_id: str, action: str, status: str, note: str, link: str) -> None:
+def _append_change_log_row(
+    spreadsheet_id: str,
+    action: str,
+    target_document: str,
+    status: str,
+    note: str,
+    link: str,
+) -> None:
     sheets_service = _sheets()
     values = [[
         _now_iso(),
         APP_NAME,
         action,
-        "AI_OS_SYSTEM_TEST",
+        target_document,
         status,
         note,
         link,
@@ -155,12 +162,20 @@ def _append_change_log_row(spreadsheet_id: str, action: str, status: str, note: 
     ).execute()
 
 
+def _change_log(drive_service) -> dict:
+    return _find_file_by_name(
+        drive_service,
+        "AI_OS_CHANGE_LOG",
+        "application/vnd.google-apps.spreadsheet",
+    )
+
+
 @app.get("/")
 def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.1.1 is online. This version updates existing user-owned files.",
+        "message": "AI OS Document Agent v0.2 is online. Supports /root-check, /test-write and /append-note.",
     }
 
 
@@ -182,7 +197,7 @@ def root_check(request: Request):
         result = drive_service.files().list(
             q=f"'{_safe_query_string(root_id)}' in parents and trashed=false",
             fields="files(id,name,mimeType,webViewLink)",
-            pageSize=50,
+            pageSize=100,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         ).execute()
@@ -209,24 +224,20 @@ def test_write_get(request: Request):
 
     try:
         drive_service = _drive()
-
         doc = _find_file_by_name(
             drive_service,
             "AI_OS_SYSTEM_TEST",
             "application/vnd.google-apps.document",
         )
-        sheet = _find_file_by_name(
-            drive_service,
-            "AI_OS_CHANGE_LOG",
-            "application/vnd.google-apps.spreadsheet",
-        )
+        sheet = _change_log(drive_service)
 
         _append_to_existing_doc(doc["id"], content)
         _append_change_log_row(
             spreadsheet_id=sheet["id"],
-            action="UPDATE_EXISTING_TEST_DOCUMENT",
+            action="TEST_WRITE",
+            target_document=doc["name"],
             status="SUCCESS",
-            note="Document Agent v0.1.1 test write into existing user-owned files.",
+            note="Document Agent v0.2 test write into existing user-owned file.",
             link=doc.get("webViewLink", ""),
         )
 
@@ -236,6 +247,62 @@ def test_write_get(request: Request):
             "document_url": doc.get("webViewLink"),
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/append-note")
+def append_note_get(request: Request, title: str = "AI_OS_NOTE", content: str = "Empty note"):
+    _check_token(request)
+    return _append_note(title=title, content=content)
+
+
+@app.post("/append-note")
+async def append_note_post(request: Request, payload: WriteRequest):
+    _check_token(request)
+    title = payload.title or "AI_OS_NOTE"
+    content = payload.content or "Empty note"
+    return _append_note(title=title, content=content)
+
+
+def _append_note(title: str, content: str):
+    try:
+        drive_service = _drive()
+        inbox = _find_file_by_name(
+            drive_service,
+            "AI_OS_INBOX",
+            "application/vnd.google-apps.document",
+        )
+        sheet = _change_log(drive_service)
+
+        timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        note_block = (
+            f"AI_OS_NOTE\n"
+            f"Title: {title}\n"
+            f"Created by: {APP_NAME}\n"
+            f"Created at: {timestamp}\n\n"
+            f"{content}\n"
+            f"---"
+        )
+
+        _append_to_existing_doc(inbox["id"], note_block)
+        _append_change_log_row(
+            spreadsheet_id=sheet["id"],
+            action="APPEND_NOTE",
+            target_document=inbox["name"],
+            status="SUCCESS",
+            note=title,
+            link=inbox.get("webViewLink", ""),
+        )
+
+        return {
+            "status": "success",
+            "target_document": inbox["name"],
+            "document_url": inbox.get("webViewLink"),
+            "change_log_name": sheet["name"],
+            "change_log_url": sheet.get("webViewLink"),
+            "note_title": title,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
