@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_2_APPEND_NOTE"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_3_CREATE_DECISION"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -19,12 +19,20 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-app = FastAPI(title=APP_NAME, version="0.2.0")
+app = FastAPI(title=APP_NAME, version="0.3.0")
 
 
 class WriteRequest(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
+
+
+class DecisionRequest(BaseModel):
+    title: Optional[str] = None
+    decision: Optional[str] = None
+    owner: Optional[str] = None
+    status: Optional[str] = "APPROVED"
+    context: Optional[str] = None
 
 
 def _require_env(name: str) -> str:
@@ -175,7 +183,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.2 is online. Supports /root-check, /test-write and /append-note.",
+        "message": "AI OS Document Agent v0.3 is online. Supports /append-note and /create-decision.",
     }
 
 
@@ -237,7 +245,7 @@ def test_write_get(request: Request):
             action="TEST_WRITE",
             target_document=doc["name"],
             status="SUCCESS",
-            note="Document Agent v0.2 test write into existing user-owned file.",
+            note="Document Agent v0.3 test write into existing user-owned file.",
             link=doc.get("webViewLink", ""),
         )
 
@@ -303,6 +311,85 @@ def _append_note(title: str, content: str):
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
             "note_title": title,
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/create-decision")
+def create_decision_get(
+    request: Request,
+    title: str = "Untitled decision",
+    decision: str = "No decision text provided.",
+    owner: str = "Unassigned",
+    status: str = "APPROVED",
+    context: str = "",
+):
+    _check_token(request)
+    return _create_decision(
+        title=title,
+        decision=decision,
+        owner=owner,
+        status=status,
+        context=context,
+    )
+
+
+@app.post("/create-decision")
+async def create_decision_post(request: Request, payload: DecisionRequest):
+    _check_token(request)
+    return _create_decision(
+        title=payload.title or "Untitled decision",
+        decision=payload.decision or "No decision text provided.",
+        owner=payload.owner or "Unassigned",
+        status=payload.status or "APPROVED",
+        context=payload.context or "",
+    )
+
+
+def _create_decision(title: str, decision: str, owner: str, status: str, context: str):
+    try:
+        drive_service = _drive()
+        decision_log = _find_file_by_name(
+            drive_service,
+            "AI_OS_DECISION_LOG",
+            "application/vnd.google-apps.document",
+        )
+        sheet = _change_log(drive_service)
+
+        timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        decision_block = (
+            "AI_OS_DECISION\n"
+            f"Title: {title}\n"
+            f"Owner: {owner}\n"
+            f"Status: {status}\n"
+            f"Created by: {APP_NAME}\n"
+            f"Created at: {timestamp}\n\n"
+            "Context:\n"
+            f"{context if context else 'No context provided.'}\n\n"
+            "Decision:\n"
+            f"{decision}\n"
+            "------------------------------------------------"
+        )
+
+        _append_to_existing_doc(decision_log["id"], decision_block)
+        _append_change_log_row(
+            spreadsheet_id=sheet["id"],
+            action="CREATE_DECISION",
+            target_document=decision_log["name"],
+            status="SUCCESS",
+            note=title,
+            link=decision_log.get("webViewLink", ""),
+        )
+
+        return {
+            "status": "success",
+            "target_document": decision_log["name"],
+            "document_url": decision_log.get("webViewLink"),
+            "change_log_name": sheet["name"],
+            "change_log_url": sheet.get("webViewLink"),
+            "decision_title": title,
+            "decision_status": status,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
