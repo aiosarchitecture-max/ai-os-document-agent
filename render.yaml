@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: ai-os-document-agent
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    autoDeploy: true
+    envVars:
+      - key: API_TOKEN
+        generateValue: true
+      - key: AI_OS_ROOT_FOLDER_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_JSON_B64
+        sync: false
