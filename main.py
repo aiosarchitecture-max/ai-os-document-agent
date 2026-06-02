@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_1"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_1_PATCH_NO_CREATE"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -19,7 +19,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-app = FastAPI(title=APP_NAME, version="0.1.0")
+app = FastAPI(title=APP_NAME, version="0.1.1")
 
 
 class WriteRequest(BaseModel):
@@ -38,7 +38,6 @@ def _check_token(request: Request) -> None:
     expected = os.getenv("API_TOKEN")
     if not expected:
         raise HTTPException(status_code=500, detail="Missing environment variable: API_TOKEN")
-
     supplied = request.headers.get("x-ai-os-token") or request.query_params.get("token")
     if supplied != expected:
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -49,16 +48,9 @@ def _service_account_info() -> dict:
     b64_json = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON_B64")
 
     if b64_json:
-        try:
-            return json.loads(base64.b64decode(b64_json).decode("utf-8"))
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON_B64: {exc}")
-
+        return json.loads(base64.b64decode(b64_json).decode("utf-8"))
     if raw_json:
-        try:
-            return json.loads(raw_json)
-        except Exception as exc:
-            raise HTTPException(status_code=500, detail=f"Invalid GOOGLE_SERVICE_ACCOUNT_JSON: {exc}")
+        return json.loads(raw_json)
 
     raise HTTPException(
         status_code=500,
@@ -67,8 +59,10 @@ def _service_account_info() -> dict:
 
 
 def _credentials():
-    info = _service_account_info()
-    return service_account.Credentials.from_service_account_info(info, scopes=SCOPES)
+    return service_account.Credentials.from_service_account_info(
+        _service_account_info(),
+        scopes=SCOPES,
+    )
 
 
 def _drive():
@@ -92,115 +86,38 @@ def _now_iso() -> str:
 
 
 def _safe_query_string(value: str) -> str:
-    return value.replace("'", "\\'")
+    return value.replace("'", "\'")
 
 
-def _find_change_log_sheet(drive_service) -> Optional[dict]:
+def _find_file_by_name(drive_service, name: str, mime_type: str) -> dict:
     root_id = _root_folder_id()
     q = (
         f"'{_safe_query_string(root_id)}' in parents and "
-        "mimeType='application/vnd.google-apps.spreadsheet' and "
-        "name='AI_OS_CHANGE_LOG' and trashed=false"
+        f"name='{_safe_query_string(name)}' and "
+        f"mimeType='{mime_type}' and "
+        "trashed=false"
     )
     result = drive_service.files().list(
         q=q,
-        fields="files(id,name,webViewLink)",
+        fields="files(id,name,mimeType,webViewLink)",
         pageSize=10,
         supportsAllDrives=True,
         includeItemsFromAllDrives=True,
     ).execute()
+
     files = result.get("files", [])
-    return files[0] if files else None
+    if not files:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Required file not found in AI_OS root folder: {name}. Create it manually first.",
+        )
+    return files[0]
 
 
-def _create_change_log_sheet(drive_service, sheets_service) -> dict:
-    root_id = _root_folder_id()
-    file_metadata = {
-        "name": "AI_OS_CHANGE_LOG",
-        "mimeType": "application/vnd.google-apps.spreadsheet",
-        "parents": [root_id],
-    }
-    created = drive_service.files().create(
-        body=file_metadata,
-        fields="id,name,webViewLink",
-        supportsAllDrives=True,
-    ).execute()
-
-    headers = [[
-        "timestamp_utc",
-        "agent",
-        "action",
-        "target_document",
-        "target_document_id",
-        "status",
-        "note",
-        "link",
-    ]]
-
-    sheets_service.spreadsheets().values().update(
-        spreadsheetId=created["id"],
-        range="A1:H1",
-        valueInputOption="RAW",
-        body={"values": headers},
-    ).execute()
-    return created
-
-
-def _get_or_create_change_log(drive_service, sheets_service) -> dict:
-    existing = _find_change_log_sheet(drive_service)
-    if existing:
-        return existing
-    return _create_change_log_sheet(drive_service, sheets_service)
-
-
-def _append_change_log_row(
-    sheets_service,
-    spreadsheet_id: str,
-    action: str,
-    target_document: str,
-    target_document_id: str,
-    status: str,
-    note: str,
-    link: str,
-) -> None:
-    values = [[
-        _now_iso(),
-        APP_NAME,
-        action,
-        target_document,
-        target_document_id,
-        status,
-        note,
-        link,
-    ]]
-    sheets_service.spreadsheets().values().append(
-        spreadsheetId=spreadsheet_id,
-        range="A:H",
-        valueInputOption="RAW",
-        insertDataOption="INSERT_ROWS",
-        body={"values": values},
-    ).execute()
-
-
-def _create_google_doc(title: str, content: str) -> dict:
-    root_id = _root_folder_id()
-    drive_service = _drive()
+def _append_to_existing_doc(document_id: str, text: str) -> None:
     docs_service = _docs()
-    sheets_service = _sheets()
-
-    metadata = {
-        "name": title,
-        "mimeType": "application/vnd.google-apps.document",
-        "parents": [root_id],
-    }
-
-    file = drive_service.files().create(
-        body=metadata,
-        fields="id,name,webViewLink",
-        supportsAllDrives=True,
-    ).execute()
-
-    document_id = file["id"]
+    document = docs_service.documents().get(documentId=document_id).execute()
+    end_index = document["body"]["content"][-1]["endIndex"] - 1
 
     docs_service.documents().batchUpdate(
         documentId=document_id,
@@ -208,33 +125,34 @@ def _create_google_doc(title: str, content: str) -> dict:
             "requests": [
                 {
                     "insertText": {
-                        "location": {"index": 1},
-                        "text": content,
+                        "location": {"index": end_index},
+                        "text": "\n\n" + text,
                     }
                 }
             ]
         },
     ).execute()
 
-    change_log = _get_or_create_change_log(drive_service, sheets_service)
-    _append_change_log_row(
-        sheets_service=sheets_service,
-        spreadsheet_id=change_log["id"],
-        action="CREATE_TEST_DOCUMENT",
-        target_document=file["name"],
-        target_document_id=document_id,
-        status="SUCCESS",
-        note="Document Agent v0.1 test write.",
-        link=file.get("webViewLink", ""),
-    )
 
-    return {
-        "document_id": document_id,
-        "document_name": file["name"],
-        "document_url": file.get("webViewLink"),
-        "change_log_id": change_log["id"],
-        "change_log_url": change_log.get("webViewLink"),
-    }
+def _append_change_log_row(spreadsheet_id: str, action: str, status: str, note: str, link: str) -> None:
+    sheets_service = _sheets()
+    values = [[
+        _now_iso(),
+        APP_NAME,
+        action,
+        "AI_OS_SYSTEM_TEST",
+        status,
+        note,
+        link,
+    ]]
+
+    sheets_service.spreadsheets().values().append(
+        spreadsheetId=spreadsheet_id,
+        range="A:G",
+        valueInputOption="RAW",
+        insertDataOption="INSERT_ROWS",
+        body={"values": values},
+    ).execute()
 
 
 @app.get("/")
@@ -242,7 +160,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.1 is online.",
+        "message": "AI OS Document Agent v0.1.1 is online. This version updates existing user-owned files.",
     }
 
 
@@ -261,15 +179,13 @@ def root_check(request: Request):
     try:
         drive_service = _drive()
         root_id = _root_folder_id()
-
         result = drive_service.files().list(
             q=f"'{_safe_query_string(root_id)}' in parents and trashed=false",
             fields="files(id,name,mimeType,webViewLink)",
-            pageSize=20,
+            pageSize=50,
             supportsAllDrives=True,
             includeItemsFromAllDrives=True,
         ).execute()
-
         return {
             "status": "success",
             "root_folder_id": root_id,
@@ -283,35 +199,43 @@ def root_check(request: Request):
 def test_write_get(request: Request):
     _check_token(request)
     timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    title = f"AI_OS_SYSTEM_TEST_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
+
     content = (
-        "AI_OS_SYSTEM_TEST\n\n"
-        f"Created by: {APP_NAME}\n"
-        f"Created at: {timestamp}\n\n"
-        "Result: Google Drive + Google Docs + Google Sheets integration works.\n"
+        "AI_OS_SYSTEM_TEST\n"
+        f"Updated by: {APP_NAME}\n"
+        f"Updated at: {timestamp}\n"
+        "Result: Google Drive + Google Docs + Google Sheets integration works without creating new files."
     )
 
     try:
-        result = _create_google_doc(title=title, content=content)
-        return {"status": "success", **result}
-    except HttpError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        drive_service = _drive()
 
+        doc = _find_file_by_name(
+            drive_service,
+            "AI_OS_SYSTEM_TEST",
+            "application/vnd.google-apps.document",
+        )
+        sheet = _find_file_by_name(
+            drive_service,
+            "AI_OS_CHANGE_LOG",
+            "application/vnd.google-apps.spreadsheet",
+        )
 
-@app.post("/test-write")
-async def test_write_post(request: Request, payload: WriteRequest):
-    _check_token(request)
-    timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
-    title = payload.title or f"AI_OS_SYSTEM_TEST_{dt.datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-    content = payload.content or (
-        "AI_OS_SYSTEM_TEST\n\n"
-        f"Created by: {APP_NAME}\n"
-        f"Created at: {timestamp}\n\n"
-        "Result: Google Drive + Google Docs + Google Sheets integration works.\n"
-    )
+        _append_to_existing_doc(doc["id"], content)
+        _append_change_log_row(
+            spreadsheet_id=sheet["id"],
+            action="UPDATE_EXISTING_TEST_DOCUMENT",
+            status="SUCCESS",
+            note="Document Agent v0.1.1 test write into existing user-owned files.",
+            link=doc.get("webViewLink", ""),
+        )
 
-    try:
-        result = _create_google_doc(title=title, content=content)
-        return {"status": "success", **result}
+        return {
+            "status": "success",
+            "document_name": doc["name"],
+            "document_url": doc.get("webViewLink"),
+            "change_log_name": sheet["name"],
+            "change_log_url": sheet.get("webViewLink"),
+        }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
