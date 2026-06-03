@@ -1,9 +1,9 @@
 import base64
 import datetime as dt
-from zoneinfo import ZoneInfo
 import json
 import os
 from typing import Optional, List, Dict, Any
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -362,12 +362,11 @@ def root_check(request: Request):
 @app.get("/test-write")
 def test_write_get(request: Request):
     _check_token(request)
-    timestamp = _now_local_string()
     content = (
         "AI_OS_SYSTEM_TEST\n"
         f"Updated by: {APP_NAME}\n"
-        _timestamp_block("Updated") +
-        "Result: Google Drive + Google Docs + Google Sheets integration works."
+        + _timestamp_block("Updated")
+        + "Result: Google Drive + Google Docs + Google Sheets integration works."
     )
 
     try:
@@ -375,13 +374,23 @@ def test_write_get(request: Request):
         doc = _find_file_by_name(drive_service, "AI_OS_SYSTEM_TEST", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
         _append_to_existing_doc(doc["id"], content)
-        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.4 test write.", doc.get("webViewLink", ""))
+        _append_change_log_row(
+            sheet["id"],
+            "TEST_WRITE",
+            doc["name"],
+            "SUCCESS",
+            "Document Agent v0.5.4 dual-time test write.",
+            doc.get("webViewLink", ""),
+        )
         return {
             "status": "success",
             "document_name": doc["name"],
             "document_url": doc.get("webViewLink"),
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -404,9 +413,10 @@ def _append_note(title: str, content: str):
         drive_service = _drive()
         inbox = _find_file_by_name(drive_service, "AI_OS_INBOX", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
-        timestamp = _now_local_string()
         note_block = (
-            f"AI_OS_NOTE\nTitle: {title}\nCreated by: {APP_NAME}\n"
+            f"AI_OS_NOTE\n"
+            f"Title: {title}\n"
+            f"Created by: {APP_NAME}\n"
             + _timestamp_block("Created")
             + f"\n{content}\n---"
         )
@@ -419,6 +429,9 @@ def _append_note(title: str, content: str):
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
             "note_title": title,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -454,10 +467,12 @@ def _create_decision(title: str, decision: str, owner: str, status: str, context
         drive_service = _drive()
         decision_log = _find_file_by_name(drive_service, "AI_OS_DECISION_LOG", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
-        timestamp = _now_local_string()
         decision_block = (
             "AI_OS_DECISION\n"
-            f"Title: {title}\nOwner: {owner}\nStatus: {status}\nCreated by: {APP_NAME}\n"
+            f"Title: {title}\n"
+            f"Owner: {owner}\n"
+            f"Status: {status}\n"
+            f"Created by: {APP_NAME}\n"
             + _timestamp_block("Created")
             + f"\nContext:\n{context if context else 'No context provided.'}\n\n"
             f"Decision:\n{decision}\n"
@@ -473,6 +488,9 @@ def _create_decision(title: str, decision: str, owner: str, status: str, context
             "change_log_url": sheet.get("webViewLink"),
             "decision_title": title,
             "decision_status": status,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -519,14 +537,20 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
 
         normalized_status = (status or "ACTIVE").upper()
         normalized_priority = (priority or "MEDIUM").upper()
-        timestamp = _now_local_string()
 
         project_block = (
             "AI_OS_PROJECT\n"
-            f"Project Name: {title}\nOwner: {owner}\nStatus: {normalized_status}\nPriority: {normalized_priority}\n"
+            f"Project Name: {title}\n"
+            f"Owner: {owner}\n"
+            f"Status: {normalized_status}\n"
+            f"Priority: {normalized_priority}\n"
             f"Created by: {APP_NAME}\n"
             + _timestamp_block("Created")
-            + f"\nDescription:\n{description}\n\nObjectives:\n{objectives}\n\nDeliverables:\n{deliverables}\n\nRisks:\n{risks}\n\nNext Actions:\n{next_actions}\n"
+            + f"\nDescription:\n{description}\n\n"
+            f"Objectives:\n{objectives}\n\n"
+            f"Deliverables:\n{deliverables}\n\n"
+            f"Risks:\n{risks}\n\n"
+            f"Next Actions:\n{next_actions}\n"
             "------------------------------------------------"
         )
 
@@ -541,6 +565,9 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
             "project_title": title,
             "project_status": normalized_status,
             "project_priority": normalized_priority,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
@@ -595,6 +622,9 @@ def _search_ai_os(query: str, limit: int = 10):
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
             "note": "v0.5.4 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
