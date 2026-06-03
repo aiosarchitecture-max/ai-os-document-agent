@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_1_COMPACT_RESPONSES"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_2_RELATION_COMPACT_FIX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.7.1",
+    version="0.7.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -524,7 +524,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.7.1 is online. Compact GPT Action responses and create-entity are enabled.",
+        "message": "AI OS Document Agent v0.7.2 is online. Relation compact responses are enabled.",
     }
 
 
@@ -577,7 +577,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.7.1 test write.",
+            "Document Agent v0.7.2 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -877,7 +877,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.7.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.7.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1147,53 +1147,43 @@ def _create_relation(source_id: str, relation_type: str, target_id: str, note: s
                 detail="AI_OS_RELATIONS document was not found in AI_OS root folder.",
             )
 
-        relation_id = _generate_object_id(drive_service, "REL", ["AI_OS_RELATIONS", "AI_OS_ENTITY_REGISTRY"])
+        relation_id = _generate_object_id(drive_service, "REL", ["AI_OS_RELATIONS"])
 
         block = (
             "AI_OS_RELATION\n"
-            + _metadata_block(relation_id, "RELATION", DEFAULT_OWNER, status="ACTIVE", priority="NORMAL")
-            + f"Source ID: {source_id}\n"
-            f"Relation Type: {relation_type}\n"
-            f"Target ID: {target_id}\n"
-            f"Note: {note}\n"
+            f"ID: {relation_id}\n"
+            "TYPE: RELATION\n"
+            f"SOURCE_ID: {source_id}\n"
+            f"RELATION_TYPE: {relation_type}\n"
+            f"TARGET_ID: {target_id}\n"
+            f"NOTE: {note}\n"
+            f"Created at: {_now_local_string()}\n"
+            f"Timezone: {AI_OS_TIMEZONE_NAME}\n"
+            f"UTC: {_now_iso()}\n"
             "------------------------------------------------"
         )
 
         _append_to_existing_doc(relations["id"], block)
 
-        _append_entity_registry(
-            drive_service,
-            relation_id,
-            "RELATION",
-            f"{source_id} {relation_type} {target_id}",
-            DEFAULT_OWNER,
-            "ACTIVE",
-            "NORMAL",
-            relations["name"],
-            relations.get("webViewLink", ""),
-        )
-
         _append_change_log_row(
             sheet["id"],
             "CREATE_RELATION",
-            relations["name"],
+            "AI_OS_RELATIONS",
             "SUCCESS",
             f"{relation_id} | {source_id} | {relation_type} | {target_id}",
-            relations.get("webViewLink", ""),
+            "",
         )
 
-        return _compact_success(
-            object_id=relation_id,
-            object_type="RELATION",
-            title=f"{source_id} {relation_type} {target_id}",
-            target_document=relations["name"],
-            action="CREATE_RELATION",
-            extra={
-                "source_id": source_id,
-                "relation_type": relation_type,
-                "target_id": target_id,
-            },
-        )
+        return {
+            "status": "success",
+            "action": "CREATE_RELATION",
+            "relation_id": relation_id,
+            "source_id": source_id,
+            "relation_type": relation_type,
+            "target_id": target_id,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -1246,8 +1236,7 @@ def _get_relations(object_id: str):
                 "source_id": source_match.group(1).upper(),
                 "relation_type": relation_match.group(1).upper(),
                 "target_id": target_match.group(1).upper(),
-                "note": note_match.group(1).strip() if note_match else "",
-                "snippet": block.strip()[:900],
+                "note": note_match.group(1).strip()[:160] if note_match else "",
             }
 
             if item["source_id"] == object_id:
