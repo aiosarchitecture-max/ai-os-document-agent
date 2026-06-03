@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_2_RELATION_COMPACT_FIX"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_0_QUERY_ENGINE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.7.2",
+    version="0.8.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -80,6 +80,18 @@ class RelationRequest(BaseModel):
 
 class GetRelationsRequest(BaseModel):
     object_id: str
+
+
+class FindEntityRequest(BaseModel):
+    query: str
+    limit: Optional[int] = 10
+
+
+class FindRelatedRequest(BaseModel):
+    object_id: str
+    relation_type: Optional[str] = None
+    direction: Optional[str] = "both"
+    limit: Optional[int] = 20
 
 
 class EntityRequest(BaseModel):
@@ -524,7 +536,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.7.2 is online. Relation compact responses are enabled.",
+        "message": "AI OS Document Agent v0.8.0 is online. Query Engine is enabled.",
     }
 
 
@@ -577,7 +589,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.7.2 test write.",
+            "Document Agent v0.8.0 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -877,7 +889,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.7.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.8.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1295,3 +1307,250 @@ def _get_object(object_id: str):
         "time_local": _now_local_iso(),
         "timezone": AI_OS_TIMEZONE_NAME,
     }
+
+
+def _parse_relation_blocks(text: str) -> List[Dict[str, Any]]:
+    relations: List[Dict[str, Any]] = []
+    blocks = text.split("------------------------------------------------")
+
+    for block in blocks:
+        source_match = re.search(r"(?:SOURCE_ID|Source ID):\s*([A-Z]+-\d{8}-\d{4}|OWNER-[A-Z0-9_]+)", block, re.IGNORECASE)
+        relation_match = re.search(r"(?:RELATION_TYPE|Relation Type):\s*([A-Z0-9_]+)", block, re.IGNORECASE)
+        target_match = re.search(r"(?:TARGET_ID|Target ID):\s*([A-Z]+-\d{8}-\d{4}|OWNER-[A-Z0-9_]+)", block, re.IGNORECASE)
+        relation_id_match = re.search(r"\b(?:ID|relation_id):\s*(REL-\d{8}-\d{4}|NOTE-\d{8}-\d{4})", block, re.IGNORECASE)
+        note_match = re.search(r"(?:NOTE|Note|Poznámka):\s*(.*)", block)
+
+        if not source_match or not relation_match or not target_match:
+            continue
+
+        relations.append({
+            "relation_id": relation_id_match.group(1).upper() if relation_id_match else None,
+            "source_id": source_match.group(1).upper(),
+            "relation_type": relation_match.group(1).upper(),
+            "target_id": target_match.group(1).upper(),
+            "note": note_match.group(1).strip()[:180] if note_match else "",
+        })
+
+    return relations
+
+
+def _entity_title_from_block(block: str) -> Optional[str]:
+    patterns = [
+        r"\bTITLE:\s*(.+)",
+        r"\bTitle:\s*(.+)",
+        r"\bNázov:\s*(.+)",
+        r"\bNazov:\s*(.+)",
+        r"\bName:\s*(.+)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, block)
+        if match:
+            return match.group(1).strip()
+    return None
+
+
+def _entity_type_from_block(block: str) -> Optional[str]:
+    patterns = [
+        r"\bENTITY_TYPE:\s*(.+)",
+        r"\bTyp:\s*(.+)",
+        r"\bTYPE:\s*(ENTITY|PERSON|COMPANY|BRAND|SYSTEM|PRODUCT|PROJECT|NOTE|DECISION)",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, block, re.IGNORECASE)
+        if match:
+            return match.group(1).strip().upper()
+    return None
+
+
+def _object_id_from_block(block: str) -> Optional[str]:
+    match = re.search(r"\b(?:ID|object_id):\s*([A-Z]+-\d{8}-\d{4})", block, re.IGNORECASE)
+    if match:
+        return match.group(1).upper()
+    return None
+
+
+def _compact_entity_matches_from_text(text: str, query: str, limit: int = 10) -> List[Dict[str, Any]]:
+    q = query.lower().strip()
+    blocks = text.split("------------------------------------------------")
+    matches = []
+
+    for block in reversed(blocks):
+        if not block.strip():
+            continue
+        if q not in block.lower():
+            continue
+
+        object_id = _object_id_from_block(block)
+        title = _entity_title_from_block(block)
+        entity_type = _entity_type_from_block(block)
+
+        matches.append({
+            "object_id": object_id,
+            "title": title,
+            "entity_type": entity_type,
+            "snippet": block.strip().replace("\n", " ")[:500],
+        })
+
+        if len(matches) >= limit:
+            break
+
+    return matches
+
+
+@app.get("/find-entity")
+def find_entity_get(request: Request, query: str, limit: int = 10):
+    _check_token(request)
+    return _find_entity(query, limit)
+
+
+@app.post("/find-entity")
+async def find_entity_post(request: Request, payload: FindEntityRequest):
+    _check_token(request)
+    return _find_entity(payload.query, payload.limit or 10)
+
+
+def _find_entity(query: str, limit: int = 10):
+    if not query or not query.strip():
+        raise HTTPException(status_code=400, detail="query is required.")
+
+    try:
+        drive_service = _drive()
+        entity_registry = _entity_registry(drive_service)
+        if not entity_registry:
+            raise HTTPException(
+                status_code=404,
+                detail="AI_OS_ENTITY_REGISTRY document was not found in AI_OS root folder.",
+            )
+
+        text = _extract_text_from_doc(entity_registry["id"])
+        matches = _compact_entity_matches_from_text(text, query, limit)
+
+        return {
+            "status": "success",
+            "action": "FIND_ENTITY",
+            "query": query,
+            "found": len(matches) > 0,
+            "count": len(matches),
+            "matches": matches,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/find-related")
+def find_related_get(
+    request: Request,
+    object_id: str,
+    relation_type: Optional[str] = None,
+    direction: str = "both",
+    limit: int = 20,
+):
+    _check_token(request)
+    return _find_related(object_id, relation_type, direction, limit)
+
+
+@app.post("/find-related")
+async def find_related_post(request: Request, payload: FindRelatedRequest):
+    _check_token(request)
+    return _find_related(
+        payload.object_id,
+        payload.relation_type,
+        payload.direction or "both",
+        payload.limit or 20,
+    )
+
+
+def _find_related(
+    object_id: str,
+    relation_type: Optional[str] = None,
+    direction: str = "both",
+    limit: int = 20,
+):
+    if not object_id or not object_id.strip():
+        raise HTTPException(status_code=400, detail="object_id is required.")
+
+    object_id = object_id.strip().upper()
+    relation_filter = relation_type.strip().upper() if relation_type else None
+    direction = (direction or "both").strip().lower()
+
+    try:
+        drive_service = _drive()
+        relations_doc = _relations_register(drive_service)
+        if not relations_doc:
+            raise HTTPException(
+                status_code=404,
+                detail="AI_OS_RELATIONS document was not found in AI_OS root folder.",
+            )
+
+        text = _extract_text_from_doc(relations_doc["id"])
+        all_relations = _parse_relation_blocks(text)
+
+        outgoing = []
+        incoming = []
+
+        for rel in all_relations:
+            if relation_filter and rel["relation_type"] != relation_filter:
+                continue
+
+            if rel["source_id"] == object_id and direction in ("both", "outgoing", "out"):
+                outgoing.append(rel)
+            if rel["target_id"] == object_id and direction in ("both", "incoming", "in"):
+                incoming.append(rel)
+
+        outgoing = outgoing[:limit]
+        incoming = incoming[:limit]
+
+        return {
+            "status": "success",
+            "action": "FIND_RELATED",
+            "object_id": object_id,
+            "relation_type_filter": relation_filter,
+            "direction": direction,
+            "outgoing_count": len(outgoing),
+            "incoming_count": len(incoming),
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/graph-summary")
+def graph_summary_get(request: Request):
+    _check_token(request)
+    return _graph_summary()
+
+
+def _graph_summary():
+    try:
+        drive_service = _drive()
+        entity_registry = _entity_registry(drive_service)
+        relations_doc = _relations_register(drive_service)
+
+        entity_count = 0
+        relation_count = 0
+
+        if entity_registry:
+            entity_text = _extract_text_from_doc(entity_registry["id"])
+            entity_count = len(re.findall(r"\bID:\s*ENTITY-\d{8}-\d{4}", entity_text))
+
+        if relations_doc:
+            relation_text = _extract_text_from_doc(relations_doc["id"])
+            relation_count = len(_parse_relation_blocks(relation_text))
+
+        return {
+            "status": "success",
+            "action": "GRAPH_SUMMARY",
+            "entity_count": entity_count,
+            "relation_count": relation_count,
+            "entity_registry": "AI_OS_ENTITY_REGISTRY" if entity_registry else "missing",
+            "relations_registry": "AI_OS_RELATIONS" if relations_doc else "missing",
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
