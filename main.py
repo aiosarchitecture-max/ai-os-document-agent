@@ -11,7 +11,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_1_GPT_ACTIONS_READY"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_2_NO_AUTH_TEST"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 
 SCOPES = [
@@ -22,7 +22,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.5.1",
+    version="0.5.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -92,12 +92,14 @@ def _require_env(name: str) -> str:
 
 
 def _check_token(request: Request) -> None:
-    expected = os.getenv("API_TOKEN")
-    if not expected:
-        raise HTTPException(status_code=500, detail="Missing environment variable: API_TOKEN")
-    supplied = request.headers.get("x-ai-os-token") or request.query_params.get("token")
-    if supplied != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
+    """
+    TEMPORARY TEST MODE:
+    Authorization is disabled so GPT Actions can write during integration testing.
+
+    Later we will restore secure auth:
+    x-ai-os-token: <API_TOKEN>
+    """
+    return
 
 
 def _service_account_info() -> dict:
@@ -297,7 +299,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.5.1 is online. OpenAPI servers.url is ready for GPT Actions.",
+        "message": "AI OS Document Agent v0.5.2 is online. Temporary no-auth test mode is active.",
     }
 
 
@@ -340,7 +342,7 @@ def test_write_get(request: Request):
         doc = _find_file_by_name(drive_service, "AI_OS_SYSTEM_TEST", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
         _append_to_existing_doc(doc["id"], content)
-        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.1 test write.", doc.get("webViewLink", ""))
+        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.2 test write.", doc.get("webViewLink", ""))
         return {
             "status": "success",
             "document_name": doc["name"],
@@ -555,7 +557,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.5.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.5.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
