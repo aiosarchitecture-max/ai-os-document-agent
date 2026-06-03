@@ -1,12 +1,16 @@
-[README.md](https://github.com/user-attachments/files/28571836/README.md)
-# AI_OS Document Agent v0.7.2 Relation Compact Fix
+[README.md](https://github.com/user-attachments/files/28572235/README.md)
+# AI_OS Document Agent v0.8.0 Query Engine
 
-Fixes:
-- /create-relation now returns ultra-compact JSON
-- avoids ResponseTooLargeError for relation creation
-- keeps create-entity, create-project, append-note, find-by-id, get-relations, get-object
-- keeps UTC + Europe/Bratislava timestamps
+Adds:
+- /find-entity
+- /find-related
+- /graph-summary
 
-Temporary test mode:
-- Authorization is disabled in _check_token().
-- Restore x-ai-os-token before production/public use.
+Keeps:
+- /create-entity
+- /create-relation
+- /get-relations
+- /get-object
+- object IDs
+- compact responses
+- UTC + Europe/Bratislava timestamps
