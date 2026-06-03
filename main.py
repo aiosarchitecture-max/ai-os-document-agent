@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_0_QUERY_ENGINE"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_1_GRAPH_QUERY_COMPACT"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.8.0",
+    version="0.8.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -536,7 +536,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.8.0 is online. Query Engine is enabled.",
+        "message": "AI OS Document Agent v0.8.1 is online. Compact graph query is enabled.",
     }
 
 
@@ -589,7 +589,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.8.0 test write.",
+            "Document Agent v0.8.1 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -889,7 +889,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.8.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.8.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1466,7 +1466,7 @@ def _find_related(
     object_id: str,
     relation_type: Optional[str] = None,
     direction: str = "both",
-    limit: int = 20,
+    limit: int = 5,
 ):
     if not object_id or not object_id.strip():
         raise HTTPException(status_code=400, detail="object_id is required.")
@@ -1474,6 +1474,7 @@ def _find_related(
     object_id = object_id.strip().upper()
     relation_filter = relation_type.strip().upper() if relation_type else None
     direction = (direction or "both").strip().lower()
+    limit = max(1, min(int(limit or 5), 5))
 
     try:
         drive_service = _drive()
@@ -1487,36 +1488,70 @@ def _find_related(
         text = _extract_text_from_doc(relations_doc["id"])
         all_relations = _parse_relation_blocks(text)
 
-        outgoing = []
-        incoming = []
+        compact_relations = []
+        total_matches = 0
 
         for rel in all_relations:
             if relation_filter and rel["relation_type"] != relation_filter:
                 continue
 
-            if rel["source_id"] == object_id and direction in ("both", "outgoing", "out"):
-                outgoing.append(rel)
-            if rel["target_id"] == object_id and direction in ("both", "incoming", "in"):
-                incoming.append(rel)
+            is_outgoing = rel["source_id"] == object_id
+            is_incoming = rel["target_id"] == object_id
 
-        outgoing = outgoing[:limit]
-        incoming = incoming[:limit]
+            if not is_outgoing and not is_incoming:
+                continue
+
+            if direction in ("outgoing", "out") and not is_outgoing:
+                continue
+            if direction in ("incoming", "in") and not is_incoming:
+                continue
+
+            total_matches += 1
+
+            if len(compact_relations) >= limit:
+                continue
+
+            compact_relations.append({
+                "relation_id": rel.get("relation_id"),
+                "direction": "outgoing" if is_outgoing else "incoming",
+                "type": rel["relation_type"],
+                "source": rel["source_id"],
+                "target": rel["target_id"],
+            })
 
         return {
             "status": "success",
-            "action": "FIND_RELATED",
+            "action": "FIND_RELATED_COMPACT",
             "object_id": object_id,
-            "relation_type_filter": relation_filter,
-            "direction": direction,
-            "outgoing_count": len(outgoing),
-            "incoming_count": len(incoming),
-            "outgoing": outgoing,
-            "incoming": incoming,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
+            "total_matches": total_matches,
+            "returned": len(compact_relations),
+            "relations": compact_relations,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/find-related-compact")
+def find_related_compact_get(
+    request: Request,
+    object_id: str,
+    relation_type: Optional[str] = None,
+    direction: str = "both",
+    limit: int = 5,
+):
+    _check_token(request)
+    return _find_related(object_id, relation_type, direction, limit)
+
+
+@app.post("/find-related-compact")
+async def find_related_compact_post(request: Request, payload: FindRelatedRequest):
+    _check_token(request)
+    return _find_related(
+        payload.object_id,
+        payload.relation_type,
+        payload.direction or "both",
+        payload.limit or 5,
+    )
 
 
 @app.get("/graph-summary")
