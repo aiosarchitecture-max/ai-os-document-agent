@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+from zoneinfo import ZoneInfo
 import json
 import os
 from typing import Optional, List, Dict, Any
@@ -11,8 +12,10 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_2_NO_AUTH_TEST"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_3_TIMEZONE_READY"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
+AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
+AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -22,7 +25,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.5.2",
+    version="0.5.3",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -140,8 +143,24 @@ def _root_folder_id() -> str:
     return _require_env("AI_OS_ROOT_FOLDER_ID")
 
 
+def _now_utc() -> dt.datetime:
+    return dt.datetime.now(dt.timezone.utc).replace(microsecond=0)
+
+
+def _now_local() -> dt.datetime:
+    return dt.datetime.now(AI_OS_TIMEZONE).replace(microsecond=0)
+
+
 def _now_iso() -> str:
-    return dt.datetime.utcnow().replace(microsecond=0).isoformat() + "Z"
+    return _now_utc().isoformat().replace("+00:00", "Z")
+
+
+def _now_local_iso() -> str:
+    return _now_local().isoformat()
+
+
+def _now_local_string() -> str:
+    return _now_local().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def _safe_query_string(value: str) -> str:
@@ -299,13 +318,19 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.5.2 is online. Temporary no-auth test mode is active.",
+        "message": "AI OS Document Agent v0.5.3 is online. Temporary no-auth test mode is active. UTC and Europe/Bratislava times are enabled.",
     }
 
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "service": APP_NAME, "time_utc": _now_iso()}
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
 
 
 @app.get("/root-check")
@@ -329,11 +354,11 @@ def root_check(request: Request):
 @app.get("/test-write")
 def test_write_get(request: Request):
     _check_token(request)
-    timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+    timestamp = _now_local_string()
     content = (
         "AI_OS_SYSTEM_TEST\n"
         f"Updated by: {APP_NAME}\n"
-        f"Updated at: {timestamp}\n"
+        f"Updated at: {timestamp}\nTimezone: {AI_OS_TIMEZONE_NAME}\nUTC: {_now_iso()}\n"
         "Result: Google Drive + Google Docs + Google Sheets integration works."
     )
 
@@ -342,7 +367,7 @@ def test_write_get(request: Request):
         doc = _find_file_by_name(drive_service, "AI_OS_SYSTEM_TEST", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
         _append_to_existing_doc(doc["id"], content)
-        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.2 test write.", doc.get("webViewLink", ""))
+        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.3 test write.", doc.get("webViewLink", ""))
         return {
             "status": "success",
             "document_name": doc["name"],
@@ -371,7 +396,7 @@ def _append_note(title: str, content: str):
         drive_service = _drive()
         inbox = _find_file_by_name(drive_service, "AI_OS_INBOX", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
-        timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = _now_local_string()
         note_block = (
             f"AI_OS_NOTE\nTitle: {title}\nCreated by: {APP_NAME}\nCreated at: {timestamp}\n\n{content}\n---"
         )
@@ -419,7 +444,7 @@ def _create_decision(title: str, decision: str, owner: str, status: str, context
         drive_service = _drive()
         decision_log = _find_file_by_name(drive_service, "AI_OS_DECISION_LOG", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
-        timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = _now_local_string()
         decision_block = (
             "AI_OS_DECISION\n"
             f"Title: {title}\nOwner: {owner}\nStatus: {status}\nCreated by: {APP_NAME}\nCreated at: {timestamp}\n\n"
@@ -483,7 +508,7 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
 
         normalized_status = (status or "ACTIVE").upper()
         normalized_priority = (priority or "MEDIUM").upper()
-        timestamp = dt.datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S UTC")
+        timestamp = _now_local_string()
 
         project_block = (
             "AI_OS_PROJECT\n"
@@ -557,7 +582,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.5.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.5.3 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
