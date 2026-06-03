@@ -2,6 +2,7 @@ import base64
 import datetime as dt
 import json
 import os
+import re
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -12,10 +13,11 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_4_DUAL_TIME_READY"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_6_0_OBJECT_IDS"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
+DEFAULT_OWNER = "Daniel Valušiak"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -25,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.5.4",
+    version="0.6.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -33,6 +35,8 @@ app = FastAPI(
 class WriteRequest(BaseModel):
     title: Optional[str] = None
     content: Optional[str] = None
+    owner: Optional[str] = None
+    related_to: Optional[str] = None
 
 
 class DecisionRequest(BaseModel):
@@ -40,7 +44,9 @@ class DecisionRequest(BaseModel):
     decision: Optional[str] = None
     owner: Optional[str] = None
     status: Optional[str] = "APPROVED"
+    priority: Optional[str] = "MEDIUM"
     context: Optional[str] = None
+    related_to: Optional[str] = None
 
 
 class ProjectRequest(BaseModel):
@@ -53,11 +59,16 @@ class ProjectRequest(BaseModel):
     deliverables: Optional[str] = None
     risks: Optional[str] = None
     next_actions: Optional[str] = None
+    related_to: Optional[str] = None
 
 
 class SearchRequest(BaseModel):
     query: str
     limit: Optional[int] = 10
+
+
+class FindByIdRequest(BaseModel):
+    object_id: str
 
 
 SEARCH_DOCUMENT_NAMES = [
@@ -87,6 +98,13 @@ SEARCH_DOCUMENT_NAMES = [
 ]
 
 
+OBJECT_DOCUMENT_MAP = {
+    "NOTE": "AI_OS_INBOX",
+    "PROJECT": "AI_OS_PROJECTS",
+    "DECISION": "AI_OS_DECISION_LOG",
+}
+
+
 def _require_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -99,7 +117,7 @@ def _check_token(request: Request) -> None:
     TEMPORARY TEST MODE:
     Authorization is disabled so GPT Actions can write during integration testing.
 
-    Later we will restore secure auth:
+    Later restore secure auth:
     x-ai-os-token: <API_TOKEN>
     """
     return
@@ -161,6 +179,10 @@ def _now_local_iso() -> str:
 
 def _now_local_string() -> str:
     return _now_local().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _today_id_date() -> str:
+    return _now_local().strftime("%Y%m%d")
 
 
 def _timestamp_block(label: str = "Created") -> str:
@@ -262,7 +284,7 @@ def _extract_text_from_doc(document_id: str) -> str:
     return "".join(parts)
 
 
-def _snippet(text: str, query: str, radius: int = 180) -> str:
+def _snippet(text: str, query: str, radius: int = 220) -> str:
     if not text:
         return ""
     low_text = text.lower()
@@ -321,12 +343,137 @@ def _project_register(drive_service) -> dict:
     )
 
 
+def _relations_register(drive_service) -> Optional[dict]:
+    return _find_optional_doc_by_name(drive_service, "AI_OS_RELATIONS")
+
+
+def _entity_registry(drive_service) -> Optional[dict]:
+    return _find_optional_doc_by_name(drive_service, "AI_OS_ENTITY_REGISTRY")
+
+
+def _build_object_id(prefix: str, existing_texts: List[str]) -> str:
+    date_part = _today_id_date()
+    pattern = re.compile(rf"\b{re.escape(prefix)}-{date_part}-(\d{{4}})\b")
+    max_num = 0
+
+    for text in existing_texts:
+        for match in pattern.finditer(text or ""):
+            try:
+                max_num = max(max_num, int(match.group(1)))
+            except ValueError:
+                continue
+
+    return f"{prefix}-{date_part}-{max_num + 1:04d}"
+
+
+def _generate_object_id(drive_service, prefix: str, doc_names: List[str]) -> str:
+    texts = []
+    for doc_name in doc_names:
+        doc = _find_optional_doc_by_name(drive_service, doc_name)
+        if doc:
+            texts.append(_extract_text_from_doc(doc["id"]))
+    return _build_object_id(prefix, texts)
+
+
+def _metadata_block(
+    object_id: str,
+    object_type: str,
+    owner: str,
+    status: Optional[str] = None,
+    priority: Optional[str] = None,
+) -> str:
+    lines = [
+        "AI_OS_METADATA",
+        f"ID: {object_id}",
+        f"TYPE: {object_type}",
+        f"OWNER: {owner}",
+    ]
+    if status:
+        lines.append(f"STATUS: {status}")
+    if priority:
+        lines.append(f"PRIORITY: {priority}")
+    lines.extend([
+        _timestamp_block("Created").rstrip(),
+        "END_METADATA",
+    ])
+    return "\n".join(lines) + "\n"
+
+
+def _append_entity_registry(
+    drive_service,
+    object_id: str,
+    object_type: str,
+    title: str,
+    owner: str,
+    status: str,
+    priority: str,
+    target_document: str,
+    link: str,
+) -> None:
+    registry = _entity_registry(drive_service)
+    if not registry:
+        return
+
+    block = (
+        "AI_OS_ENTITY\n"
+        f"ID: {object_id}\n"
+        f"TYPE: {object_type}\n"
+        f"TITLE: {title}\n"
+        f"OWNER: {owner}\n"
+        f"STATUS: {status}\n"
+        f"PRIORITY: {priority}\n"
+        f"TARGET_DOCUMENT: {target_document}\n"
+        f"LINK: {link}\n"
+        + _timestamp_block("Registered")
+        + "------------------------------------------------"
+    )
+    _append_to_existing_doc(registry["id"], block)
+
+
+def _append_relation(
+    drive_service,
+    source_id: str,
+    relation_type: str,
+    target_id: str,
+    note: str = "",
+) -> bool:
+    relations = _relations_register(drive_service)
+    if not relations:
+        return False
+
+    block = (
+        "AI_OS_RELATION\n"
+        f"SOURCE_ID: {source_id}\n"
+        f"RELATION_TYPE: {relation_type}\n"
+        f"TARGET_ID: {target_id}\n"
+        f"NOTE: {note}\n"
+        + _timestamp_block("Created")
+        + "------------------------------------------------"
+    )
+    _append_to_existing_doc(relations["id"], block)
+    return True
+
+
+def _create_owner_relation(drive_service, object_id: str, owner: str) -> None:
+    if owner:
+        owner_slug = re.sub(r"[^A-Za-z0-9]+", "_", owner.strip()).strip("_").upper()
+        if owner_slug:
+            _append_relation(drive_service, object_id, "HAS_OWNER", f"OWNER-{owner_slug}", owner)
+
+
+def _parse_object_type_from_id(object_id: str) -> Optional[str]:
+    if not object_id or "-" not in object_id:
+        return None
+    prefix = object_id.split("-", 1)[0].upper()
+    return prefix if prefix in OBJECT_DOCUMENT_MAP else None
+
+
 @app.get("/")
 def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.5.4 is online. Temporary no-auth test mode is active. Dual UTC + Europe/Bratislava timestamps are enabled.",
+        "message": "AI OS Document Agent v0.6.0 is online. Object IDs, entity registry and basic relations are enabled.",
     }
 
 
@@ -379,7 +526,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.5.4 dual-time test write.",
+            "Document Agent v0.6.0 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -397,38 +544,66 @@ def test_write_get(request: Request):
 
 
 @app.get("/append-note")
-def append_note_get(request: Request, title: str = "AI_OS_NOTE", content: str = "Empty note"):
+def append_note_get(
+    request: Request,
+    title: str = "AI_OS_NOTE",
+    content: str = "Empty note",
+    owner: str = DEFAULT_OWNER,
+    related_to: Optional[str] = None,
+):
     _check_token(request)
-    return _append_note(title=title, content=content)
+    return _append_note(title=title, content=content, owner=owner, related_to=related_to)
 
 
 @app.post("/append-note")
 async def append_note_post(request: Request, payload: WriteRequest):
     _check_token(request)
-    return _append_note(payload.title or "AI_OS_NOTE", payload.content or "Empty note")
+    return _append_note(
+        payload.title or "AI_OS_NOTE",
+        payload.content or "Empty note",
+        payload.owner or DEFAULT_OWNER,
+        payload.related_to,
+    )
 
 
-def _append_note(title: str, content: str):
+def _append_note(title: str, content: str, owner: str, related_to: Optional[str] = None):
     try:
         drive_service = _drive()
         inbox = _find_file_by_name(drive_service, "AI_OS_INBOX", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
+
+        object_id = _generate_object_id(drive_service, "NOTE", ["AI_OS_INBOX", "AI_OS_ENTITY_REGISTRY"])
+
         note_block = (
-            f"AI_OS_NOTE\n"
-            f"Title: {title}\n"
-            f"Created by: {APP_NAME}\n"
-            + _timestamp_block("Created")
-            + f"\n{content}\n---"
+            "AI_OS_NOTE\n"
+            + _metadata_block(object_id, "NOTE", owner, status="CAPTURED", priority="NORMAL")
+            + f"Title: {title}\n\n"
+            f"Content:\n{content}\n"
+            "------------------------------------------------"
         )
         _append_to_existing_doc(inbox["id"], note_block)
-        _append_change_log_row(sheet["id"], "APPEND_NOTE", inbox["name"], "SUCCESS", title, inbox.get("webViewLink", ""))
+
+        _append_entity_registry(
+            drive_service, object_id, "NOTE", title, owner, "CAPTURED", "NORMAL",
+            inbox["name"], inbox.get("webViewLink", "")
+        )
+        _create_owner_relation(drive_service, object_id, owner)
+        if related_to:
+            _append_relation(drive_service, related_to, "HAS_NOTE", object_id, title)
+
+        _append_change_log_row(sheet["id"], "APPEND_NOTE", inbox["name"], "SUCCESS", f"{object_id} | {title}", inbox.get("webViewLink", ""))
+
         return {
             "status": "success",
+            "object_id": object_id,
+            "object_type": "NOTE",
             "target_document": inbox["name"],
             "document_url": inbox.get("webViewLink"),
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
             "note_title": title,
+            "owner": owner,
+            "related_to": related_to,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -442,12 +617,14 @@ def create_decision_get(
     request: Request,
     title: str = "Untitled decision",
     decision: str = "No decision text provided.",
-    owner: str = "Unassigned",
+    owner: str = DEFAULT_OWNER,
     status: str = "APPROVED",
+    priority: str = "MEDIUM",
     context: str = "",
+    related_to: Optional[str] = None,
 ):
     _check_token(request)
-    return _create_decision(title, decision, owner, status, context)
+    return _create_decision(title, decision, owner, status, priority, context, related_to)
 
 
 @app.post("/create-decision")
@@ -456,38 +633,57 @@ async def create_decision_post(request: Request, payload: DecisionRequest):
     return _create_decision(
         payload.title or "Untitled decision",
         payload.decision or "No decision text provided.",
-        payload.owner or "Unassigned",
+        payload.owner or DEFAULT_OWNER,
         payload.status or "APPROVED",
+        payload.priority or "MEDIUM",
         payload.context or "",
+        payload.related_to,
     )
 
 
-def _create_decision(title: str, decision: str, owner: str, status: str, context: str):
+def _create_decision(title: str, decision: str, owner: str, status: str, priority: str, context: str, related_to: Optional[str] = None):
     try:
         drive_service = _drive()
         decision_log = _find_file_by_name(drive_service, "AI_OS_DECISION_LOG", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
+
+        normalized_status = (status or "APPROVED").upper()
+        normalized_priority = (priority or "MEDIUM").upper()
+        object_id = _generate_object_id(drive_service, "DECISION", ["AI_OS_DECISION_LOG", "AI_OS_ENTITY_REGISTRY"])
+
         decision_block = (
             "AI_OS_DECISION\n"
-            f"Title: {title}\n"
-            f"Owner: {owner}\n"
-            f"Status: {status}\n"
-            f"Created by: {APP_NAME}\n"
-            + _timestamp_block("Created")
-            + f"\nContext:\n{context if context else 'No context provided.'}\n\n"
+            + _metadata_block(object_id, "DECISION", owner, normalized_status, normalized_priority)
+            + f"Title: {title}\n\n"
+            f"Context:\n{context if context else 'No context provided.'}\n\n"
             f"Decision:\n{decision}\n"
             "------------------------------------------------"
         )
         _append_to_existing_doc(decision_log["id"], decision_block)
-        _append_change_log_row(sheet["id"], "CREATE_DECISION", decision_log["name"], "SUCCESS", title, decision_log.get("webViewLink", ""))
+
+        _append_entity_registry(
+            drive_service, object_id, "DECISION", title, owner, normalized_status, normalized_priority,
+            decision_log["name"], decision_log.get("webViewLink", "")
+        )
+        _create_owner_relation(drive_service, object_id, owner)
+        if related_to:
+            _append_relation(drive_service, related_to, "HAS_DECISION", object_id, title)
+
+        _append_change_log_row(sheet["id"], "CREATE_DECISION", decision_log["name"], "SUCCESS", f"{object_id} | {title}", decision_log.get("webViewLink", ""))
+
         return {
             "status": "success",
+            "object_id": object_id,
+            "object_type": "DECISION",
             "target_document": decision_log["name"],
             "document_url": decision_log.get("webViewLink"),
             "change_log_name": sheet["name"],
             "change_log_url": sheet.get("webViewLink"),
             "decision_title": title,
-            "decision_status": status,
+            "decision_status": normalized_status,
+            "decision_priority": normalized_priority,
+            "owner": owner,
+            "related_to": related_to,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -500,7 +696,7 @@ def _create_decision(title: str, decision: str, owner: str, status: str, context
 def create_project_get(
     request: Request,
     title: str = "Untitled_Project",
-    owner: str = "Unassigned",
+    owner: str = DEFAULT_OWNER,
     status: str = "ACTIVE",
     priority: str = "MEDIUM",
     description: str = "No description provided.",
@@ -508,9 +704,10 @@ def create_project_get(
     deliverables: str = "No deliverables provided.",
     risks: str = "No risks provided.",
     next_actions: str = "No next actions provided.",
+    related_to: Optional[str] = None,
 ):
     _check_token(request)
-    return _create_project(title, owner, status, priority, description, objectives, deliverables, risks, next_actions)
+    return _create_project(title, owner, status, priority, description, objectives, deliverables, risks, next_actions, related_to)
 
 
 @app.post("/create-project")
@@ -518,7 +715,7 @@ async def create_project_post(request: Request, payload: ProjectRequest):
     _check_token(request)
     return _create_project(
         payload.title or "Untitled_Project",
-        payload.owner or "Unassigned",
+        payload.owner or DEFAULT_OWNER,
         payload.status or "ACTIVE",
         payload.priority or "MEDIUM",
         payload.description or "No description provided.",
@@ -526,10 +723,22 @@ async def create_project_post(request: Request, payload: ProjectRequest):
         payload.deliverables or "No deliverables provided.",
         payload.risks or "No risks provided.",
         payload.next_actions or "No next actions provided.",
+        payload.related_to,
     )
 
 
-def _create_project(title: str, owner: str, status: str, priority: str, description: str, objectives: str, deliverables: str, risks: str, next_actions: str):
+def _create_project(
+    title: str,
+    owner: str,
+    status: str,
+    priority: str,
+    description: str,
+    objectives: str,
+    deliverables: str,
+    risks: str,
+    next_actions: str,
+    related_to: Optional[str] = None,
+):
     try:
         drive_service = _drive()
         project_register = _project_register(drive_service)
@@ -537,16 +746,13 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
 
         normalized_status = (status or "ACTIVE").upper()
         normalized_priority = (priority or "MEDIUM").upper()
+        object_id = _generate_object_id(drive_service, "PROJECT", ["AI_OS_PROJECTS", "AI_OS_ENTITY_REGISTRY"])
 
         project_block = (
             "AI_OS_PROJECT\n"
-            f"Project Name: {title}\n"
-            f"Owner: {owner}\n"
-            f"Status: {normalized_status}\n"
-            f"Priority: {normalized_priority}\n"
-            f"Created by: {APP_NAME}\n"
-            + _timestamp_block("Created")
-            + f"\nDescription:\n{description}\n\n"
+            + _metadata_block(object_id, "PROJECT", owner, normalized_status, normalized_priority)
+            + f"Project Name: {title}\n\n"
+            f"Description:\n{description}\n\n"
             f"Objectives:\n{objectives}\n\n"
             f"Deliverables:\n{deliverables}\n\n"
             f"Risks:\n{risks}\n\n"
@@ -555,9 +761,21 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
         )
 
         _append_to_existing_doc(project_register["id"], project_block)
-        _append_change_log_row(sheet["id"], "CREATE_PROJECT", project_register["name"], "SUCCESS", f"{title} | {normalized_status} | {normalized_priority}", project_register.get("webViewLink", ""))
+
+        _append_entity_registry(
+            drive_service, object_id, "PROJECT", title, owner, normalized_status, normalized_priority,
+            project_register["name"], project_register.get("webViewLink", "")
+        )
+        _create_owner_relation(drive_service, object_id, owner)
+        if related_to:
+            _append_relation(drive_service, related_to, "RELATES_TO", object_id, title)
+
+        _append_change_log_row(sheet["id"], "CREATE_PROJECT", project_register["name"], "SUCCESS", f"{object_id} | {title} | {normalized_status} | {normalized_priority}", project_register.get("webViewLink", ""))
+
         return {
             "status": "success",
+            "object_id": object_id,
+            "object_type": "PROJECT",
             "target_document": project_register["name"],
             "document_url": project_register.get("webViewLink"),
             "change_log_name": sheet["name"],
@@ -565,6 +783,8 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
             "project_title": title,
             "project_status": normalized_status,
             "project_priority": normalized_priority,
+            "owner": owner,
+            "related_to": related_to,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -621,7 +841,126 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.5.4 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.6.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/find-by-id")
+def find_by_id_get(request: Request, object_id: str):
+    _check_token(request)
+    return _find_by_id(object_id)
+
+
+@app.post("/find-by-id")
+async def find_by_id_post(request: Request, payload: FindByIdRequest):
+    _check_token(request)
+    return _find_by_id(payload.object_id)
+
+
+def _find_by_id(object_id: str):
+    if not object_id or not object_id.strip():
+        raise HTTPException(status_code=400, detail="object_id is required.")
+
+    object_id = object_id.strip().upper()
+    object_type = _parse_object_type_from_id(object_id)
+
+    candidate_docs = []
+    if object_type:
+        candidate_docs.append(OBJECT_DOCUMENT_MAP[object_type])
+    candidate_docs.extend(["AI_OS_ENTITY_REGISTRY", "AI_OS_RELATIONS"])
+    candidate_docs.extend([d for d in SEARCH_DOCUMENT_NAMES if d not in candidate_docs])
+
+    try:
+        drive_service = _drive()
+        matches = []
+        seen = set()
+
+        for doc_name in candidate_docs:
+            if doc_name in seen:
+                continue
+            seen.add(doc_name)
+
+            file_info = _find_optional_doc_by_name(drive_service, doc_name)
+            if not file_info:
+                continue
+
+            text = _extract_text_from_doc(file_info["id"])
+            if object_id.lower() in text.lower():
+                matches.append({
+                    "document_name": file_info["name"],
+                    "document_url": file_info.get("webViewLink", ""),
+                    "snippet": _snippet(text, object_id, radius=320),
+                })
+
+        return {
+            "status": "success",
+            "object_id": object_id,
+            "object_type": object_type or "UNKNOWN",
+            "found": len(matches) > 0,
+            "match_count": len(matches),
+            "matches": matches,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/list-projects")
+def list_projects_get(request: Request, limit: int = 20):
+    _check_token(request)
+    return _list_by_type("PROJECT", "AI_OS_PROJECTS", limit)
+
+
+@app.get("/list-decisions")
+def list_decisions_get(request: Request, limit: int = 20):
+    _check_token(request)
+    return _list_by_type("DECISION", "AI_OS_DECISION_LOG", limit)
+
+
+@app.get("/list-notes")
+def list_notes_get(request: Request, limit: int = 20):
+    _check_token(request)
+    return _list_by_type("NOTE", "AI_OS_INBOX", limit)
+
+
+def _list_by_type(object_type: str, doc_name: str, limit: int = 20):
+    try:
+        drive_service = _drive()
+        file_info = _find_optional_doc_by_name(drive_service, doc_name)
+        if not file_info:
+            raise HTTPException(status_code=404, detail=f"Document not found: {doc_name}")
+
+        text = _extract_text_from_doc(file_info["id"])
+        marker = f"TYPE: {object_type}"
+        blocks = text.split("------------------------------------------------")
+        results = []
+
+        for block in reversed(blocks):
+            if marker in block:
+                object_id_match = re.search(r"\bID:\s*([A-Z]+-\d{8}-\d{4})", block)
+                title_match = re.search(r"(?:Title|Project Name):\s*(.+)", block)
+                results.append({
+                    "object_id": object_id_match.group(1) if object_id_match else None,
+                    "title": title_match.group(1).strip() if title_match else None,
+                    "snippet": block.strip()[:900],
+                })
+                if len(results) >= limit:
+                    break
+
+        return {
+            "status": "success",
+            "object_type": object_type,
+            "document_name": doc_name,
+            "document_url": file_info.get("webViewLink", ""),
+            "count": len(results),
+            "items": results,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
