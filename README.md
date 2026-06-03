@@ -1,12 +1,11 @@
-[README.md](https://github.com/user-attachments/files/28561890/README.md)
-# AI_OS Document Agent v0.7.1 Compact Responses
+[README.md](https://github.com/user-attachments/files/28571836/README.md)
+# AI_OS Document Agent v0.7.2 Relation Compact Fix
 
 Fixes:
-- Reduces GPT Action response size to avoid ResponseTooLargeError
-- Adds /create-entity endpoint
-- Keeps /create-relation, /get-relations, /get-object
-- Keeps UTC + Europe/Bratislava timestamps
-- Keeps object IDs
+- /create-relation now returns ultra-compact JSON
+- avoids ResponseTooLargeError for relation creation
+- keeps create-entity, create-project, append-note, find-by-id, get-relations, get-object
+- keeps UTC + Europe/Bratislava timestamps
 
 Temporary test mode:
 - Authorization is disabled in _check_token().
