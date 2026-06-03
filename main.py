@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_1_GRAPH_QUERY_COMPACT"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_2_GPT_SCHEMA_READY"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.8.1",
+    version="0.8.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -536,7 +536,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.8.1 is online. Compact graph query is enabled.",
+        "message": "AI OS Document Agent v0.8.2 is online. GPT compact OpenAPI schema is enabled.",
     }
 
 
@@ -589,7 +589,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.8.1 test write.",
+            "Document Agent v0.8.2 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -889,7 +889,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.8.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.8.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1589,3 +1589,208 @@ def _graph_summary():
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+@app.get("/openapi-gpt.json")
+def openapi_gpt_json():
+    return {
+        "openapi": "3.1.0",
+        "info": {
+            "title": "AI_OS_DOCUMENT_AGENT_GPT_ACTIONS_COMPACT",
+            "version": "0.8.2",
+            "description": "Compact schema for AI_OS Commander GPT Actions."
+        },
+        "servers": [{"url": PUBLIC_BASE_URL}],
+        "paths": {
+            "/health": {
+                "get": {
+                    "operationId": "health",
+                    "summary": "Check health.",
+                    "responses": {"200": {"description": "OK"}}
+                }
+            },
+            "/append-note": {
+                "post": {
+                    "operationId": "appendNote",
+                    "summary": "Append note.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "content": {"type": "string"},
+                                        "owner": {"type": "string"},
+                                        "related_to": {"type": "string"}
+                                    },
+                                    "required": ["title", "content"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/create-project": {
+                "post": {
+                    "operationId": "createProject",
+                    "summary": "Create project.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "owner": {"type": "string"},
+                                        "status": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "objectives": {"type": "string"},
+                                        "deliverables": {"type": "string"},
+                                        "risks": {"type": "string"},
+                                        "next_actions": {"type": "string"},
+                                        "related_to": {"type": "string"}
+                                    },
+                                    "required": ["title"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/create-decision": {
+                "post": {
+                    "operationId": "createDecision",
+                    "summary": "Create decision.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "title": {"type": "string"},
+                                        "decision": {"type": "string"},
+                                        "owner": {"type": "string"},
+                                        "status": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                        "context": {"type": "string"},
+                                        "related_to": {"type": "string"}
+                                    },
+                                    "required": ["title", "decision"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/create-entity": {
+                "post": {
+                    "operationId": "createEntity",
+                    "summary": "Create entity.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "entity_type": {"type": "string"},
+                                        "title": {"type": "string"},
+                                        "description": {"type": "string"},
+                                        "owner": {"type": "string"},
+                                        "status": {"type": "string"},
+                                        "priority": {"type": "string"},
+                                        "related_to": {"type": "string"}
+                                    },
+                                    "required": ["entity_type", "title"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/create-relation": {
+                "post": {
+                    "operationId": "createRelation",
+                    "summary": "Create relation.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {
+                            "application/json": {
+                                "schema": {
+                                    "type": "object",
+                                    "properties": {
+                                        "source_id": {"type": "string"},
+                                        "relation_type": {"type": "string"},
+                                        "target_id": {"type": "string"},
+                                        "note": {"type": "string"}
+                                    },
+                                    "required": ["source_id", "relation_type", "target_id"]
+                                }
+                            }
+                        }
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/find-entity": {
+                "get": {
+                    "operationId": "findEntity",
+                    "summary": "Find entity.",
+                    "parameters": [
+                        {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 5}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/find-related-compact": {
+                "get": {
+                    "operationId": "findRelatedCompact",
+                    "summary": "Find related compact.",
+                    "parameters": [
+                        {"name": "object_id", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "relation_type", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "direction", "in": "query", "required": False, "schema": {"type": "string", "default": "both"}},
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 5}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/find-by-id": {
+                "get": {
+                    "operationId": "findById",
+                    "summary": "Find by ID.",
+                    "parameters": [
+                        {"name": "object_id", "in": "query", "required": True, "schema": {"type": "string"}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/search": {
+                "get": {
+                    "operationId": "searchAiOs",
+                    "summary": "Search AI_OS.",
+                    "parameters": [
+                        {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 5}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/graph-summary": {
+                "get": {
+                    "operationId": "graphSummary",
+                    "summary": "Graph summary.",
+                    "responses": {"200": {"description": "Success"}}
+                }
+            }
+        }
+    }
