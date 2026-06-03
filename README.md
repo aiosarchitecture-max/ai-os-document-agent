@@ -1,14 +1,13 @@
-[README.md](https://github.com/user-attachments/files/28560555/README.md)
-# AI_OS Document Agent v0.6.0
+[README.md](https://github.com/user-attachments/files/28561064/README.md)
+# AI_OS Document Agent v0.7.0 Knowledge Graph
 
-Adds:
-- Unique object IDs: NOTE-YYYYMMDD-0001, PROJECT-YYYYMMDD-0001, DECISION-YYYYMMDD-0001
-- Metadata block for every object
-- UTC + Europe/Bratislava timestamps
-- Entity registry support
-- Basic relation support
-- find-by-id endpoint
-- list-projects, list-decisions, list-notes endpoints
+Adds to v0.6.0:
+- /create-relation
+- /get-relations
+- /get-object
+- relation IDs: REL-YYYYMMDD-0001
+- outgoing/incoming relation lookup
+- object lookup with relation context
 
 Temporary test mode:
 - Authorization is disabled in _check_token().
