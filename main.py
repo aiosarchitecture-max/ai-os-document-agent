@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_6_0_OBJECT_IDS"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_0_KNOWLEDGE_GRAPH"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.6.0",
+    version="0.7.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -68,6 +68,17 @@ class SearchRequest(BaseModel):
 
 
 class FindByIdRequest(BaseModel):
+    object_id: str
+
+
+class RelationRequest(BaseModel):
+    source_id: str
+    relation_type: str
+    target_id: str
+    note: Optional[str] = None
+
+
+class GetRelationsRequest(BaseModel):
     object_id: str
 
 
@@ -473,7 +484,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.6.0 is online. Object IDs, entity registry and basic relations are enabled.",
+        "message": "AI OS Document Agent v0.7.0 is online. Knowledge Graph relations are enabled.",
     }
 
 
@@ -526,7 +537,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.6.0 test write.",
+            "Document Agent v0.7.0 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -841,7 +852,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.6.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.7.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -967,3 +978,210 @@ def _list_by_type(object_type: str, doc_name: str, limit: int = 20):
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/create-relation")
+def create_relation_get(
+    request: Request,
+    source_id: str,
+    relation_type: str,
+    target_id: str,
+    note: str = "",
+):
+    _check_token(request)
+    return _create_relation(source_id, relation_type, target_id, note)
+
+
+@app.post("/create-relation")
+async def create_relation_post(request: Request, payload: RelationRequest):
+    _check_token(request)
+    return _create_relation(
+        payload.source_id,
+        payload.relation_type,
+        payload.target_id,
+        payload.note or "",
+    )
+
+
+def _create_relation(source_id: str, relation_type: str, target_id: str, note: str = ""):
+    if not source_id or not relation_type or not target_id:
+        raise HTTPException(status_code=400, detail="source_id, relation_type and target_id are required.")
+
+    source_id = source_id.strip().upper()
+    relation_type = relation_type.strip().upper()
+    target_id = target_id.strip().upper()
+
+    try:
+        drive_service = _drive()
+        relations = _relations_register(drive_service)
+        sheet = _change_log(drive_service)
+
+        if not relations:
+            raise HTTPException(
+                status_code=404,
+                detail="AI_OS_RELATIONS document was not found in AI_OS root folder.",
+            )
+
+        relation_id = _generate_object_id(drive_service, "REL", ["AI_OS_RELATIONS", "AI_OS_ENTITY_REGISTRY"])
+
+        block = (
+            "AI_OS_RELATION\n"
+            + _metadata_block(relation_id, "RELATION", DEFAULT_OWNER, status="ACTIVE", priority="NORMAL")
+            + f"Source ID: {source_id}\n"
+            f"Relation Type: {relation_type}\n"
+            f"Target ID: {target_id}\n"
+            f"Note: {note}\n"
+            "------------------------------------------------"
+        )
+
+        _append_to_existing_doc(relations["id"], block)
+
+        _append_entity_registry(
+            drive_service,
+            relation_id,
+            "RELATION",
+            f"{source_id} {relation_type} {target_id}",
+            DEFAULT_OWNER,
+            "ACTIVE",
+            "NORMAL",
+            relations["name"],
+            relations.get("webViewLink", ""),
+        )
+
+        _append_change_log_row(
+            sheet["id"],
+            "CREATE_RELATION",
+            relations["name"],
+            "SUCCESS",
+            f"{relation_id} | {source_id} | {relation_type} | {target_id}",
+            relations.get("webViewLink", ""),
+        )
+
+        return {
+            "status": "success",
+            "object_id": relation_id,
+            "object_type": "RELATION",
+            "source_id": source_id,
+            "relation_type": relation_type,
+            "target_id": target_id,
+            "note": note,
+            "target_document": relations["name"],
+            "document_url": relations.get("webViewLink", ""),
+            "change_log_name": sheet["name"],
+            "change_log_url": sheet.get("webViewLink"),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/get-relations")
+def get_relations_get(request: Request, object_id: str):
+    _check_token(request)
+    return _get_relations(object_id)
+
+
+@app.post("/get-relations")
+async def get_relations_post(request: Request, payload: GetRelationsRequest):
+    _check_token(request)
+    return _get_relations(payload.object_id)
+
+
+def _get_relations(object_id: str):
+    if not object_id or not object_id.strip():
+        raise HTTPException(status_code=400, detail="object_id is required.")
+
+    object_id = object_id.strip().upper()
+
+    try:
+        drive_service = _drive()
+        relations_doc = _relations_register(drive_service)
+        if not relations_doc:
+            raise HTTPException(
+                status_code=404,
+                detail="AI_OS_RELATIONS document was not found in AI_OS root folder.",
+            )
+
+        text = _extract_text_from_doc(relations_doc["id"])
+        blocks = text.split("------------------------------------------------")
+
+        outgoing = []
+        incoming = []
+
+        for block in blocks:
+            source_match = re.search(r"(?:SOURCE_ID|Source ID):\s*([A-Z]+-\d{8}-\d{4}|OWNER-[A-Z0-9_]+)", block, re.IGNORECASE)
+            relation_match = re.search(r"(?:RELATION_TYPE|Relation Type):\s*([A-Z0-9_]+)", block, re.IGNORECASE)
+            target_match = re.search(r"(?:TARGET_ID|Target ID):\s*([A-Z]+-\d{8}-\d{4}|OWNER-[A-Z0-9_]+)", block, re.IGNORECASE)
+            relation_id_match = re.search(r"\bID:\s*(REL-\d{8}-\d{4})", block)
+            note_match = re.search(r"Note:\s*(.*)", block)
+
+            if not source_match or not relation_match or not target_match:
+                continue
+
+            item = {
+                "relation_id": relation_id_match.group(1) if relation_id_match else None,
+                "source_id": source_match.group(1).upper(),
+                "relation_type": relation_match.group(1).upper(),
+                "target_id": target_match.group(1).upper(),
+                "note": note_match.group(1).strip() if note_match else "",
+                "snippet": block.strip()[:900],
+            }
+
+            if item["source_id"] == object_id:
+                outgoing.append(item)
+            if item["target_id"] == object_id:
+                incoming.append(item)
+
+        return {
+            "status": "success",
+            "object_id": object_id,
+            "outgoing_count": len(outgoing),
+            "incoming_count": len(incoming),
+            "outgoing": outgoing,
+            "incoming": incoming,
+            "relations_document": relations_doc["name"],
+            "relations_document_url": relations_doc.get("webViewLink", ""),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/get-object")
+def get_object_get(request: Request, object_id: str):
+    _check_token(request)
+    return _get_object(object_id)
+
+
+@app.post("/get-object")
+async def get_object_post(request: Request, payload: FindByIdRequest):
+    _check_token(request)
+    return _get_object(payload.object_id)
+
+
+def _get_object(object_id: str):
+    found = _find_by_id(object_id)
+    if not found.get("found"):
+        return found
+
+    relations = _get_relations(object_id)
+    return {
+        "status": "success",
+        "object_id": found.get("object_id"),
+        "object_type": found.get("object_type"),
+        "found": True,
+        "matches": found.get("matches", []),
+        "relations": {
+            "outgoing": relations.get("outgoing", []),
+            "incoming": relations.get("incoming", []),
+            "outgoing_count": relations.get("outgoing_count", 0),
+            "incoming_count": relations.get("incoming_count", 0),
+        },
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
