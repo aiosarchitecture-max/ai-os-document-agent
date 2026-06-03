@@ -11,7 +11,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_SEARCH"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_1_GPT_ACTIONS_READY"
+PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -19,7 +20,11 @@ SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
 ]
 
-app = FastAPI(title=APP_NAME, version="0.5.0")
+app = FastAPI(
+    title=APP_NAME,
+    version="0.5.1",
+    servers=[{"url": PUBLIC_BASE_URL}],
+)
 
 
 class WriteRequest(BaseModel):
@@ -59,6 +64,10 @@ SEARCH_DOCUMENT_NAMES = [
     "AI_OS_ROADMAP",
     "AI_OS_MASTER",
     "AI_OS_SYSTEM_TEST",
+    "AI_OS_RELATIONS",
+    "AI_OS_OBJECT_TYPES",
+    "AI_OS_RELATION_TYPES",
+    "AI_OS_ENTITY_REGISTRY",
     "AI_OS_CAPABILITY_MAP",
     "AI_OS_DATA_MODEL",
     "AI_OS_INFORMATION_ARCHITECTURE",
@@ -288,7 +297,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.5 is online. Supports notes, decisions, projects and search.",
+        "message": "AI OS Document Agent v0.5.1 is online. OpenAPI servers.url is ready for GPT Actions.",
     }
 
 
@@ -331,7 +340,7 @@ def test_write_get(request: Request):
         doc = _find_file_by_name(drive_service, "AI_OS_SYSTEM_TEST", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
         _append_to_existing_doc(doc["id"], content)
-        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5 test write.", doc.get("webViewLink", ""))
+        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.1 test write.", doc.get("webViewLink", ""))
         return {
             "status": "success",
             "document_name": doc["name"],
@@ -546,7 +555,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.5 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.5.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
