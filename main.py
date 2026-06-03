@@ -13,7 +13,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_0_KNOWLEDGE_GRAPH"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_7_1_COMPACT_RESPONSES"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +27,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.7.0",
+    version="0.7.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -80,6 +80,16 @@ class RelationRequest(BaseModel):
 
 class GetRelationsRequest(BaseModel):
     object_id: str
+
+
+class EntityRequest(BaseModel):
+    entity_type: str
+    title: str
+    description: Optional[str] = None
+    owner: Optional[str] = None
+    status: Optional[str] = "ACTIVE"
+    priority: Optional[str] = "NORMAL"
+    related_to: Optional[str] = None
 
 
 SEARCH_DOCUMENT_NAMES = [
@@ -479,12 +489,42 @@ def _parse_object_type_from_id(object_id: str) -> Optional[str]:
     return prefix if prefix in OBJECT_DOCUMENT_MAP else None
 
 
+def _compact_success(
+    object_id: Optional[str] = None,
+    object_type: Optional[str] = None,
+    title: Optional[str] = None,
+    target_document: Optional[str] = None,
+    action: Optional[str] = None,
+    extra: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    response: Dict[str, Any] = {
+        "status": "success",
+        "service": APP_NAME,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
+    if action:
+        response["action"] = action
+    if object_id:
+        response["object_id"] = object_id
+    if object_type:
+        response["object_type"] = object_type
+    if title:
+        response["title"] = title
+    if target_document:
+        response["target_document"] = target_document
+    if extra:
+        response.update(extra)
+    return response
+
+
 @app.get("/")
 def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.7.0 is online. Knowledge Graph relations are enabled.",
+        "message": "AI OS Document Agent v0.7.1 is online. Compact GPT Action responses and create-entity are enabled.",
     }
 
 
@@ -537,7 +577,7 @@ def test_write_get(request: Request):
             "TEST_WRITE",
             doc["name"],
             "SUCCESS",
-            "Document Agent v0.7.0 test write.",
+            "Document Agent v0.7.1 test write.",
             doc.get("webViewLink", ""),
         )
         return {
@@ -604,21 +644,14 @@ def _append_note(title: str, content: str, owner: str, related_to: Optional[str]
 
         _append_change_log_row(sheet["id"], "APPEND_NOTE", inbox["name"], "SUCCESS", f"{object_id} | {title}", inbox.get("webViewLink", ""))
 
-        return {
-            "status": "success",
-            "object_id": object_id,
-            "object_type": "NOTE",
-            "target_document": inbox["name"],
-            "document_url": inbox.get("webViewLink"),
-            "change_log_name": sheet["name"],
-            "change_log_url": sheet.get("webViewLink"),
-            "note_title": title,
-            "owner": owner,
-            "related_to": related_to,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
+        return _compact_success(
+            object_id=object_id,
+            object_type="NOTE",
+            title=title,
+            target_document=inbox["name"],
+            action="APPEND_NOTE",
+            extra={"owner": owner, "related_to": related_to},
+        )
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -682,23 +715,19 @@ def _create_decision(title: str, decision: str, owner: str, status: str, priorit
 
         _append_change_log_row(sheet["id"], "CREATE_DECISION", decision_log["name"], "SUCCESS", f"{object_id} | {title}", decision_log.get("webViewLink", ""))
 
-        return {
-            "status": "success",
-            "object_id": object_id,
-            "object_type": "DECISION",
-            "target_document": decision_log["name"],
-            "document_url": decision_log.get("webViewLink"),
-            "change_log_name": sheet["name"],
-            "change_log_url": sheet.get("webViewLink"),
-            "decision_title": title,
-            "decision_status": normalized_status,
-            "decision_priority": normalized_priority,
-            "owner": owner,
-            "related_to": related_to,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
+        return _compact_success(
+            object_id=object_id,
+            object_type="DECISION",
+            title=title,
+            target_document=decision_log["name"],
+            action="CREATE_DECISION",
+            extra={
+                "status_value": normalized_status,
+                "priority": normalized_priority,
+                "owner": owner,
+                "related_to": related_to,
+            },
+        )
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -783,23 +812,19 @@ def _create_project(
 
         _append_change_log_row(sheet["id"], "CREATE_PROJECT", project_register["name"], "SUCCESS", f"{object_id} | {title} | {normalized_status} | {normalized_priority}", project_register.get("webViewLink", ""))
 
-        return {
-            "status": "success",
-            "object_id": object_id,
-            "object_type": "PROJECT",
-            "target_document": project_register["name"],
-            "document_url": project_register.get("webViewLink"),
-            "change_log_name": sheet["name"],
-            "change_log_url": sheet.get("webViewLink"),
-            "project_title": title,
-            "project_status": normalized_status,
-            "project_priority": normalized_priority,
-            "owner": owner,
-            "related_to": related_to,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
+        return _compact_success(
+            object_id=object_id,
+            object_type="PROJECT",
+            title=title,
+            target_document=project_register["name"],
+            action="CREATE_PROJECT",
+            extra={
+                "status_value": normalized_status,
+                "priority": normalized_priority,
+                "owner": owner,
+                "related_to": related_to,
+            },
+        )
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -852,7 +877,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.7.0 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.7.1 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -980,6 +1005,106 @@ def _list_by_type(object_type: str, doc_name: str, limit: int = 20):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+@app.get("/create-entity")
+def create_entity_get(
+    request: Request,
+    entity_type: str,
+    title: str,
+    description: str = "",
+    owner: str = DEFAULT_OWNER,
+    status: str = "ACTIVE",
+    priority: str = "NORMAL",
+    related_to: Optional[str] = None,
+):
+    _check_token(request)
+    return _create_entity(entity_type, title, description, owner, status, priority, related_to)
+
+
+@app.post("/create-entity")
+async def create_entity_post(request: Request, payload: EntityRequest):
+    _check_token(request)
+    return _create_entity(
+        payload.entity_type,
+        payload.title,
+        payload.description or "",
+        payload.owner or DEFAULT_OWNER,
+        payload.status or "ACTIVE",
+        payload.priority or "NORMAL",
+        payload.related_to,
+    )
+
+
+def _create_entity(
+    entity_type: str,
+    title: str,
+    description: str = "",
+    owner: str = DEFAULT_OWNER,
+    status: str = "ACTIVE",
+    priority: str = "NORMAL",
+    related_to: Optional[str] = None,
+):
+    if not entity_type or not title:
+        raise HTTPException(status_code=400, detail="entity_type and title are required.")
+
+    normalized_type = entity_type.strip().upper()
+    normalized_status = (status or "ACTIVE").upper()
+    normalized_priority = (priority or "NORMAL").upper()
+
+    try:
+        drive_service = _drive()
+        entity_registry = _entity_registry(drive_service)
+        sheet = _change_log(drive_service)
+
+        if not entity_registry:
+            raise HTTPException(
+                status_code=404,
+                detail="AI_OS_ENTITY_REGISTRY document was not found in AI_OS root folder.",
+            )
+
+        object_id = _generate_object_id(drive_service, "ENTITY", ["AI_OS_ENTITY_REGISTRY"])
+
+        entity_block = (
+            "AI_OS_ENTITY\n"
+            + _metadata_block(object_id, "ENTITY", owner, normalized_status, normalized_priority)
+            + f"ENTITY_TYPE: {normalized_type}\n"
+            f"TITLE: {title}\n"
+            f"DESCRIPTION: {description}\n"
+            "------------------------------------------------"
+        )
+
+        _append_to_existing_doc(entity_registry["id"], entity_block)
+        _create_owner_relation(drive_service, object_id, owner)
+
+        if related_to:
+            _append_relation(drive_service, related_to.strip().upper(), "RELATED_TO_ENTITY", object_id, title)
+
+        _append_change_log_row(
+            sheet["id"],
+            "CREATE_ENTITY",
+            entity_registry["name"],
+            "SUCCESS",
+            f"{object_id} | {normalized_type} | {title}",
+            entity_registry.get("webViewLink", ""),
+        )
+
+        return _compact_success(
+            object_id=object_id,
+            object_type="ENTITY",
+            title=title,
+            target_document=entity_registry["name"],
+            action="CREATE_ENTITY",
+            extra={
+                "entity_type": normalized_type,
+                "owner": owner,
+                "status_value": normalized_status,
+                "priority": normalized_priority,
+                "related_to": related_to,
+            },
+        )
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/create-relation")
 def create_relation_get(
     request: Request,
@@ -1057,22 +1182,18 @@ def _create_relation(source_id: str, relation_type: str, target_id: str, note: s
             relations.get("webViewLink", ""),
         )
 
-        return {
-            "status": "success",
-            "object_id": relation_id,
-            "object_type": "RELATION",
-            "source_id": source_id,
-            "relation_type": relation_type,
-            "target_id": target_id,
-            "note": note,
-            "target_document": relations["name"],
-            "document_url": relations.get("webViewLink", ""),
-            "change_log_name": sheet["name"],
-            "change_log_url": sheet.get("webViewLink"),
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
+        return _compact_success(
+            object_id=relation_id,
+            object_type="RELATION",
+            title=f"{source_id} {relation_type} {target_id}",
+            target_document=relations["name"],
+            action="CREATE_RELATION",
+            extra={
+                "source_id": source_id,
+                "relation_type": relation_type,
+                "target_id": target_id,
+            },
+        )
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
@@ -1139,8 +1260,8 @@ def _get_relations(object_id: str):
             "object_id": object_id,
             "outgoing_count": len(outgoing),
             "incoming_count": len(incoming),
-            "outgoing": outgoing,
-            "incoming": incoming,
+            "outgoing": outgoing[:20],
+            "incoming": incoming[:20],
             "relations_document": relations_doc["name"],
             "relations_document_url": relations_doc.get("webViewLink", ""),
             "time_utc": _now_iso(),
@@ -1174,10 +1295,10 @@ def _get_object(object_id: str):
         "object_id": found.get("object_id"),
         "object_type": found.get("object_type"),
         "found": True,
-        "matches": found.get("matches", []),
+        "matches": found.get("matches", [])[:3],
         "relations": {
-            "outgoing": relations.get("outgoing", []),
-            "incoming": relations.get("incoming", []),
+            "outgoing": relations.get("outgoing", [])[:20],
+            "incoming": relations.get("incoming", [])[:20],
             "outgoing_count": relations.get("outgoing_count", 0),
             "incoming_count": relations.get("incoming_count", 0),
         },
