@@ -12,7 +12,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_3_TIMEZONE_READY"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_5_4_DUAL_TIME_READY"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -25,7 +25,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.5.3",
+    version="0.5.4",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -161,6 +161,14 @@ def _now_local_iso() -> str:
 
 def _now_local_string() -> str:
     return _now_local().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _timestamp_block(label: str = "Created") -> str:
+    return (
+        f"{label} at: {_now_local_string()}\n"
+        f"Timezone: {AI_OS_TIMEZONE_NAME}\n"
+        f"UTC: {_now_iso()}\n"
+    )
 
 
 def _safe_query_string(value: str) -> str:
@@ -318,7 +326,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.5.3 is online. Temporary no-auth test mode is active. UTC and Europe/Bratislava times are enabled.",
+        "message": "AI OS Document Agent v0.5.4 is online. Temporary no-auth test mode is active. Dual UTC + Europe/Bratislava timestamps are enabled.",
     }
 
 
@@ -358,7 +366,7 @@ def test_write_get(request: Request):
     content = (
         "AI_OS_SYSTEM_TEST\n"
         f"Updated by: {APP_NAME}\n"
-        f"Updated at: {timestamp}\nTimezone: {AI_OS_TIMEZONE_NAME}\nUTC: {_now_iso()}\n"
+        _timestamp_block("Updated") +
         "Result: Google Drive + Google Docs + Google Sheets integration works."
     )
 
@@ -367,7 +375,7 @@ def test_write_get(request: Request):
         doc = _find_file_by_name(drive_service, "AI_OS_SYSTEM_TEST", "application/vnd.google-apps.document")
         sheet = _change_log(drive_service)
         _append_to_existing_doc(doc["id"], content)
-        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.3 test write.", doc.get("webViewLink", ""))
+        _append_change_log_row(sheet["id"], "TEST_WRITE", doc["name"], "SUCCESS", "Document Agent v0.5.4 test write.", doc.get("webViewLink", ""))
         return {
             "status": "success",
             "document_name": doc["name"],
@@ -398,7 +406,9 @@ def _append_note(title: str, content: str):
         sheet = _change_log(drive_service)
         timestamp = _now_local_string()
         note_block = (
-            f"AI_OS_NOTE\nTitle: {title}\nCreated by: {APP_NAME}\nCreated at: {timestamp}\n\n{content}\n---"
+            f"AI_OS_NOTE\nTitle: {title}\nCreated by: {APP_NAME}\n"
+            + _timestamp_block("Created")
+            + f"\n{content}\n---"
         )
         _append_to_existing_doc(inbox["id"], note_block)
         _append_change_log_row(sheet["id"], "APPEND_NOTE", inbox["name"], "SUCCESS", title, inbox.get("webViewLink", ""))
@@ -447,8 +457,9 @@ def _create_decision(title: str, decision: str, owner: str, status: str, context
         timestamp = _now_local_string()
         decision_block = (
             "AI_OS_DECISION\n"
-            f"Title: {title}\nOwner: {owner}\nStatus: {status}\nCreated by: {APP_NAME}\nCreated at: {timestamp}\n\n"
-            f"Context:\n{context if context else 'No context provided.'}\n\n"
+            f"Title: {title}\nOwner: {owner}\nStatus: {status}\nCreated by: {APP_NAME}\n"
+            + _timestamp_block("Created")
+            + f"\nContext:\n{context if context else 'No context provided.'}\n\n"
             f"Decision:\n{decision}\n"
             "------------------------------------------------"
         )
@@ -513,8 +524,9 @@ def _create_project(title: str, owner: str, status: str, priority: str, descript
         project_block = (
             "AI_OS_PROJECT\n"
             f"Project Name: {title}\nOwner: {owner}\nStatus: {normalized_status}\nPriority: {normalized_priority}\n"
-            f"Created by: {APP_NAME}\nCreated at: {timestamp}\n\n"
-            f"Description:\n{description}\n\nObjectives:\n{objectives}\n\nDeliverables:\n{deliverables}\n\nRisks:\n{risks}\n\nNext Actions:\n{next_actions}\n"
+            f"Created by: {APP_NAME}\n"
+            + _timestamp_block("Created")
+            + f"\nDescription:\n{description}\n\nObjectives:\n{objectives}\n\nDeliverables:\n{deliverables}\n\nRisks:\n{risks}\n\nNext Actions:\n{next_actions}\n"
             "------------------------------------------------"
         )
 
@@ -582,7 +594,7 @@ def _search_ai_os(query: str, limit: int = 10):
             "matches": matches,
             "searched_documents": searched_documents,
             "missing_documents": missing_documents,
-            "note": "v0.5.3 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
+            "note": "v0.5.4 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
