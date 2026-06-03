@@ -1,13 +1,12 @@
-[README.md](https://github.com/user-attachments/files/28561064/README.md)
-# AI_OS Document Agent v0.7.0 Knowledge Graph
+[README.md](https://github.com/user-attachments/files/28561890/README.md)
+# AI_OS Document Agent v0.7.1 Compact Responses
 
-Adds to v0.6.0:
-- /create-relation
-- /get-relations
-- /get-object
-- relation IDs: REL-YYYYMMDD-0001
-- outgoing/incoming relation lookup
-- object lookup with relation context
+Fixes:
+- Reduces GPT Action response size to avoid ResponseTooLargeError
+- Adds /create-entity endpoint
+- Keeps /create-relation, /get-relations, /get-object
+- Keeps UTC + Europe/Bratislava timestamps
+- Keeps object IDs
 
 Temporary test mode:
 - Authorization is disabled in _check_token().
