@@ -1,5 +1,6 @@
 import base64
 import datetime as dt
+import hashlib
 import json
 import os
 import re
@@ -13,7 +14,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_8_2_GPT_SCHEMA_READY"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_9_0_KNOWLEDGE_LAYER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -27,7 +28,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.8.2",
+    version="0.9.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -104,7 +105,44 @@ class EntityRequest(BaseModel):
     related_to: Optional[str] = None
 
 
+class DocumentRequest(BaseModel):
+    title: str
+    object_type: str
+    document_category: str
+    project_id: str
+    status: Optional[str] = "APPROVED"
+    owner: Optional[str] = DEFAULT_OWNER
+    version: Optional[str] = "1.0"
+    content: Optional[str] = None
+    source_object_id: Optional[str] = None
+    related_objects: Optional[List[str]] = None
+
+
+class UpdateDocumentRequest(BaseModel):
+    title: Optional[str] = None
+    object_type: Optional[str] = None
+    document_category: Optional[str] = None
+    project_id: Optional[str] = None
+    status: Optional[str] = None
+    owner: Optional[str] = None
+    version: Optional[str] = None
+    content: Optional[str] = None
+    source_object_id: Optional[str] = None
+    related_objects: Optional[List[str]] = None
+
+
+class ProjectHubRequest(BaseModel):
+    project_id: str
+    title: Optional[str] = None
+    owner: Optional[str] = DEFAULT_OWNER
+    status: Optional[str] = "ACTIVE"
+    overview: Optional[str] = None
+
+
+
 SEARCH_DOCUMENT_NAMES = [
+    "AI_OS_DOCUMENT_REGISTRY",
+    "AI_OS_PROJECT_HUBS",
     "AI_OS_INBOX",
     "AI_OS_DECISION_LOG",
     "AI_OS_PROJECTS",
@@ -135,6 +173,8 @@ OBJECT_DOCUMENT_MAP = {
     "NOTE": "AI_OS_INBOX",
     "PROJECT": "AI_OS_PROJECTS",
     "DECISION": "AI_OS_DECISION_LOG",
+    "DOCUMENT": "AI_OS_DOCUMENT_REGISTRY",
+    "HUB": "AI_OS_PROJECT_HUBS",
 }
 
 
@@ -274,6 +314,34 @@ def _find_optional_doc_by_name(drive_service, name: str) -> Optional[dict]:
     return files[0] if files else None
 
 
+
+def _get_or_create_doc_by_name(drive_service, name: str, initial_text: Optional[str] = None) -> dict:
+    existing = _find_optional_doc_by_name(drive_service, name)
+    if existing:
+        return existing
+
+    metadata = {
+        "name": name,
+        "mimeType": "application/vnd.google-apps.document",
+        "parents": [_root_folder_id()],
+    }
+    created = drive_service.files().create(
+        body=metadata,
+        fields="id,name,mimeType,webViewLink,parents",
+        supportsAllDrives=True,
+    ).execute()
+
+    intro = initial_text or (
+        f"{name}\n"
+        f"Created by: {APP_NAME}\n"
+        + _timestamp_block("Created")
+        + "------------------------------------------------"
+    )
+    _append_to_existing_doc(created["id"], intro)
+    return created
+
+
+
 def _append_to_existing_doc(document_id: str, text: str) -> None:
     docs_service = _docs()
     document = docs_service.documents().get(documentId=document_id).execute()
@@ -382,6 +450,26 @@ def _relations_register(drive_service) -> Optional[dict]:
 
 def _entity_registry(drive_service) -> Optional[dict]:
     return _find_optional_doc_by_name(drive_service, "AI_OS_ENTITY_REGISTRY")
+
+
+
+def _document_registry(drive_service) -> dict:
+    return _get_or_create_doc_by_name(drive_service, "AI_OS_DOCUMENT_REGISTRY")
+
+
+def _project_hubs_registry(drive_service) -> dict:
+    return _get_or_create_doc_by_name(drive_service, "AI_OS_PROJECT_HUBS")
+
+
+def _content_hash(content: str) -> str:
+    normalized = (content or "").strip().encode("utf-8")
+    return hashlib.sha256(normalized).hexdigest()
+
+
+def _object_url(kind: str, object_id: str) -> str:
+    kind = kind.strip("/").lower()
+    return f"{PUBLIC_BASE_URL}/{kind}/{object_id}"
+
 
 
 def _build_object_id(prefix: str, existing_texts: List[str]) -> str:
@@ -536,7 +624,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.8.2 is online. GPT compact OpenAPI schema is enabled.",
+        "message": "AI OS Document Agent v0.9.0 is online. Knowledge Persistence Layer is enabled.",
     }
 
 
@@ -1590,14 +1678,486 @@ def _graph_summary():
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 
+
+
+# -----------------------------------------------------------------------------
+# AI_OS Knowledge Persistence Layer v0.9.0
+# -----------------------------------------------------------------------------
+
+DOCUMENT_CATEGORY_VALUES = {
+    "ANALYSIS",
+    "AUDIT",
+    "FORMULA",
+    "DECISION_SUPPORT",
+    "RFQ",
+    "MANUFACTURING",
+    "LEGAL",
+    "RESEARCH",
+    "PROJECT",
+    "OTHER",
+}
+
+
+def _normalize_document_category(value: str) -> str:
+    category = (value or "OTHER").strip().upper()
+    return category if category in DOCUMENT_CATEGORY_VALUES else "OTHER"
+
+
+def _parse_blocks_by_marker(text: str, marker: str) -> List[str]:
+    blocks = text.split("------------------------------------------------")
+    return [block.strip() for block in blocks if marker in block]
+
+
+def _extract_field(block: str, field: str) -> Optional[str]:
+    match = re.search(rf"^\s*{re.escape(field)}:\s*(.*)$", block, re.IGNORECASE | re.MULTILINE)
+    return match.group(1).strip() if match else None
+
+
+def _block_to_document_record(block: str) -> Dict[str, Any]:
+    return {
+        "document_id": _extract_field(block, "DOCUMENT_ID") or _extract_field(block, "ID"),
+        "title": _extract_field(block, "TITLE"),
+        "object_type": _extract_field(block, "OBJECT_TYPE"),
+        "document_category": _extract_field(block, "DOCUMENT_CATEGORY"),
+        "project_id": _extract_field(block, "PROJECT_ID"),
+        "status": _extract_field(block, "STATUS"),
+        "owner": _extract_field(block, "OWNER"),
+        "version": _extract_field(block, "VERSION"),
+        "url": _extract_field(block, "URL"),
+        "content_hash": _extract_field(block, "CONTENT_HASH"),
+        "source_object_id": _extract_field(block, "SOURCE_OBJECT_ID"),
+        "related_objects": _extract_field(block, "RELATED_OBJECTS"),
+        "created_at": _extract_field(block, "CREATED_AT"),
+        "updated_at": _extract_field(block, "UPDATED_AT"),
+        "snippet": block[:1200],
+    }
+
+
+def _document_exists_by_hash(drive_service, content_hash: str) -> Optional[Dict[str, Any]]:
+    registry = _document_registry(drive_service)
+    text = _extract_text_from_doc(registry["id"])
+    for block in _parse_blocks_by_marker(text, "AI_OS_DOCUMENT"):
+        if f"CONTENT_HASH: {content_hash}" in block:
+            return _block_to_document_record(block)
+    return None
+
+
+def _append_document_registry(
+    drive_service,
+    document_id: str,
+    title: str,
+    object_type: str,
+    document_category: str,
+    project_id: str,
+    status: str,
+    owner: str,
+    version: str,
+    url: str,
+    content_hash: str,
+    source_object_id: str,
+    related_objects: List[str],
+    content: str,
+) -> None:
+    registry = _document_registry(drive_service)
+    now = _now_iso()
+    related_json = json.dumps(related_objects or [], ensure_ascii=False)
+    block = (
+        "AI_OS_DOCUMENT\n"
+        f"DOCUMENT_ID: {document_id}\n"
+        f"TITLE: {title}\n"
+        f"OBJECT_TYPE: {object_type}\n"
+        f"DOCUMENT_CATEGORY: {document_category}\n"
+        f"PROJECT_ID: {project_id}\n"
+        f"STATUS: {status}\n"
+        f"OWNER: {owner}\n"
+        f"VERSION: {version}\n"
+        f"URL: {url}\n"
+        f"CONTENT_HASH: {content_hash}\n"
+        f"SOURCE_OBJECT_ID: {source_object_id or ''}\n"
+        f"RELATED_OBJECTS: {related_json}\n"
+        f"CREATED_AT: {now}\n"
+        f"UPDATED_AT: {now}\n"
+        "CONTENT:\n"
+        f"{content or ''}\n"
+        "------------------------------------------------"
+    )
+    _append_to_existing_doc(registry["id"], block)
+
+
+def _create_document(payload: DocumentRequest) -> Dict[str, Any]:
+    if not payload.title or not payload.object_type or not payload.project_id:
+        raise HTTPException(status_code=400, detail="title, object_type and project_id are required.")
+
+    drive_service = _drive()
+    sheet = _change_log(drive_service)
+
+    title = payload.title.strip()
+    object_type = payload.object_type.strip().upper()
+    category = _normalize_document_category(payload.document_category)
+    project_id = payload.project_id.strip().upper()
+    status = (payload.status or "APPROVED").strip().upper()
+    owner = payload.owner or DEFAULT_OWNER
+    version = payload.version or "1.0"
+    content = payload.content or ""
+    source_object_id = (payload.source_object_id or project_id).strip().upper()
+    related_objects = [x.strip().upper() for x in (payload.related_objects or []) if x and x.strip()]
+
+    hash_input = json.dumps({
+        "title": title,
+        "object_type": object_type,
+        "document_category": category,
+        "project_id": project_id,
+        "version": version,
+        "content": content,
+    }, ensure_ascii=False, sort_keys=True)
+    content_hash = _content_hash(hash_input)
+
+    existing = _document_exists_by_hash(drive_service, content_hash)
+    if existing:
+        return {
+            "status": "success",
+            "action": "CREATE_DOCUMENT",
+            "deduplicated": True,
+            "document": existing,
+            "note": "Document with identical CONTENT_HASH already exists. No duplicate created.",
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+
+    document_id = _generate_object_id(drive_service, "DOC", ["AI_OS_DOCUMENT_REGISTRY"])
+    url = _object_url("document", document_id)
+
+    _append_document_registry(
+        drive_service=drive_service,
+        document_id=document_id,
+        title=title,
+        object_type=object_type,
+        document_category=category,
+        project_id=project_id,
+        status=status,
+        owner=owner,
+        version=version,
+        url=url,
+        content_hash=content_hash,
+        source_object_id=source_object_id,
+        related_objects=related_objects,
+        content=content,
+    )
+
+    _append_relation(drive_service, document_id, "BELONGS_TO", project_id, title)
+    for related in related_objects:
+        _append_relation(drive_service, document_id, "REFERENCES", related, title)
+
+    registry = _document_registry(drive_service)
+    _append_change_log_row(
+        sheet["id"],
+        "CREATE_DOCUMENT",
+        registry["name"],
+        "SUCCESS",
+        f"{document_id} | {title} | {project_id}",
+        registry.get("webViewLink", ""),
+    )
+
+    return {
+        "status": "success",
+        "action": "CREATE_DOCUMENT",
+        "document_id": document_id,
+        "title": title,
+        "object_type": object_type,
+        "document_category": category,
+        "project_id": project_id,
+        "url": url,
+        "registry_url": registry.get("webViewLink", ""),
+        "content_hash": content_hash,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+    }
+
+
+@app.post("/documents")
+async def create_document_post(request: Request, payload: DocumentRequest):
+    _check_token(request)
+    try:
+        return _create_document(payload)
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/documents/{document_id}")
+def get_document_get(request: Request, document_id: str):
+    _check_token(request)
+    return _get_document(document_id)
+
+
+def _get_document(document_id: str) -> Dict[str, Any]:
+    if not document_id:
+        raise HTTPException(status_code=400, detail="document_id is required.")
+    document_id = document_id.strip().upper()
+    try:
+        drive_service = _drive()
+        registry = _document_registry(drive_service)
+        text = _extract_text_from_doc(registry["id"])
+        matches = []
+        for block in _parse_blocks_by_marker(text, "AI_OS_DOCUMENT"):
+            if re.search(rf"^\s*DOCUMENT_ID:\s*{re.escape(document_id)}\s*$", block, re.IGNORECASE | re.MULTILINE):
+                matches.append(_block_to_document_record(block))
+        return {
+            "status": "success",
+            "document_id": document_id,
+            "found": len(matches) > 0,
+            "version_count": len(matches),
+            "versions": matches,
+            "registry_url": registry.get("webViewLink", ""),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.put("/documents/{document_id}")
+async def update_document_put(request: Request, document_id: str, payload: UpdateDocumentRequest):
+    _check_token(request)
+    return _update_document(document_id, payload)
+
+
+def _update_document(document_id: str, payload: UpdateDocumentRequest) -> Dict[str, Any]:
+    current = _get_document(document_id)
+    if not current.get("found"):
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+    latest = current["versions"][-1]
+
+    def choose(name: str, fallback: str = ""):
+        value = getattr(payload, name, None)
+        return value if value is not None else latest.get(name, fallback)
+
+    old_version = str(latest.get("version") or "1.0")
+    try:
+        major_minor = old_version.split(".")
+        new_version = f"{major_minor[0]}.{int(major_minor[1]) + 1}" if len(major_minor) == 2 else f"{old_version}.1"
+    except Exception:
+        new_version = f"{old_version}.1"
+
+    create_payload = DocumentRequest(
+        title=choose("title"),
+        object_type=choose("object_type"),
+        document_category=choose("document_category", "OTHER"),
+        project_id=choose("project_id"),
+        status=choose("status", "UPDATED"),
+        owner=choose("owner", DEFAULT_OWNER),
+        version=payload.version or new_version,
+        content=payload.content or latest.get("snippet", ""),
+        source_object_id=choose("source_object_id"),
+        related_objects=payload.related_objects or [],
+    )
+    result = _create_document(create_payload)
+    result["action"] = "UPDATE_DOCUMENT"
+    result["updated_document_id"] = document_id
+    return result
+
+
+@app.delete("/documents/{document_id}")
+def delete_document_delete(request: Request, document_id: str):
+    _check_token(request)
+    return _delete_document(document_id)
+
+
+def _delete_document(document_id: str) -> Dict[str, Any]:
+    current = _get_document(document_id)
+    if not current.get("found"):
+        raise HTTPException(status_code=404, detail=f"Document not found: {document_id}")
+    latest = current["versions"][-1]
+    payload = UpdateDocumentRequest(
+        title=latest.get("title"),
+        object_type=latest.get("object_type"),
+        document_category=latest.get("document_category"),
+        project_id=latest.get("project_id"),
+        status="DELETED",
+        owner=latest.get("owner") or DEFAULT_OWNER,
+        content=f"TOMBSTONE: Document {document_id} marked as DELETED at {_now_iso()}.",
+        source_object_id=latest.get("source_object_id"),
+    )
+    result = _update_document(document_id, payload)
+    result["action"] = "DELETE_DOCUMENT"
+    return result
+
+
+@app.get("/projects/{project_id}/documents")
+def list_project_documents_get(request: Request, project_id: str, category: Optional[str] = None, limit: int = 100):
+    _check_token(request)
+    return _list_project_documents(project_id, category, limit)
+
+
+def _list_project_documents(project_id: str, category: Optional[str] = None, limit: int = 100) -> Dict[str, Any]:
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required.")
+    project_id = project_id.strip().upper()
+    category_filter = _normalize_document_category(category) if category else None
+    try:
+        drive_service = _drive()
+        registry = _document_registry(drive_service)
+        text = _extract_text_from_doc(registry["id"])
+        items = []
+        seen_doc_versions = set()
+        for block in reversed(_parse_blocks_by_marker(text, "AI_OS_DOCUMENT")):
+            rec = _block_to_document_record(block)
+            if (rec.get("project_id") or "").upper() != project_id:
+                continue
+            if category_filter and (rec.get("document_category") or "").upper() != category_filter:
+                continue
+            key = (rec.get("document_id"), rec.get("version"))
+            if key in seen_doc_versions:
+                continue
+            seen_doc_versions.add(key)
+            items.append(rec)
+            if len(items) >= limit:
+                break
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "category": category_filter,
+            "count": len(items),
+            "documents": items,
+            "registry_url": registry.get("webViewLink", ""),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+def _append_project_hub(drive_service, hub_id: str, project_id: str, title: str, status: str, owner: str, overview: str, url: str) -> None:
+    hubs = _project_hubs_registry(drive_service)
+    now = _now_iso()
+    block = (
+        "AI_OS_PROJECT_HUB\n"
+        f"HUB_ID: {hub_id}\n"
+        f"PROJECT_ID: {project_id}\n"
+        f"TITLE: {title}\n"
+        f"STATUS: {status}\n"
+        f"OWNER: {owner}\n"
+        f"URL: {url}\n"
+        f"CREATED_AT: {now}\n"
+        f"UPDATED_AT: {now}\n"
+        "SECTIONS:\n"
+        "- Overview\n"
+        "- Current Status\n"
+        "- Decisions\n"
+        "- Documents\n"
+        "- Audits\n"
+        "- Formulas\n"
+        "- RFQ\n"
+        "- Related Objects\n"
+        "OVERVIEW:\n"
+        f"{overview or ''}\n"
+        "------------------------------------------------"
+    )
+    _append_to_existing_doc(hubs["id"], block)
+
+
+@app.post("/project-hubs")
+async def create_project_hub_post(request: Request, payload: ProjectHubRequest):
+    _check_token(request)
+    return _create_project_hub(payload)
+
+
+def _create_project_hub(payload: ProjectHubRequest) -> Dict[str, Any]:
+    if not payload.project_id:
+        raise HTTPException(status_code=400, detail="project_id is required.")
+    try:
+        drive_service = _drive()
+        sheet = _change_log(drive_service)
+        hubs = _project_hubs_registry(drive_service)
+        project_id = payload.project_id.strip().upper()
+        existing = _get_project_hub(project_id)
+        if existing.get("found"):
+            return existing
+        hub_id = _generate_object_id(drive_service, "HUB", ["AI_OS_PROJECT_HUBS"])
+        title = payload.title or f"Project Hub {project_id}"
+        status = (payload.status or "ACTIVE").upper()
+        owner = payload.owner or DEFAULT_OWNER
+        url = _object_url("hub", hub_id)
+        _append_project_hub(drive_service, hub_id, project_id, title, status, owner, payload.overview or "", url)
+        _append_relation(drive_service, project_id, "HAS_HUB", hub_id, title)
+        _append_change_log_row(sheet["id"], "CREATE_PROJECT_HUB", hubs["name"], "SUCCESS", f"{hub_id} | {project_id} | {title}", hubs.get("webViewLink", ""))
+        return {
+            "status": "success",
+            "action": "CREATE_PROJECT_HUB",
+            "hub_id": hub_id,
+            "project_id": project_id,
+            "title": title,
+            "url": url,
+            "registry_url": hubs.get("webViewLink", ""),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/project-hubs/{project_id}")
+def get_project_hub_get(request: Request, project_id: str):
+    _check_token(request)
+    return _get_project_hub(project_id)
+
+
+def _get_project_hub(project_id: str) -> Dict[str, Any]:
+    project_id = project_id.strip().upper()
+    try:
+        drive_service = _drive()
+        hubs = _project_hubs_registry(drive_service)
+        text = _extract_text_from_doc(hubs["id"])
+        matches = []
+        for block in reversed(_parse_blocks_by_marker(text, "AI_OS_PROJECT_HUB")):
+            if re.search(rf"^\s*PROJECT_ID:\s*{re.escape(project_id)}\s*$", block, re.IGNORECASE | re.MULTILINE):
+                matches.append({
+                    "hub_id": _extract_field(block, "HUB_ID"),
+                    "project_id": _extract_field(block, "PROJECT_ID"),
+                    "title": _extract_field(block, "TITLE"),
+                    "status": _extract_field(block, "STATUS"),
+                    "owner": _extract_field(block, "OWNER"),
+                    "url": _extract_field(block, "URL"),
+                    "created_at": _extract_field(block, "CREATED_AT"),
+                    "updated_at": _extract_field(block, "UPDATED_AT"),
+                    "snippet": block[:1200],
+                })
+                break
+        docs = _list_project_documents(project_id, None, 100).get("documents", []) if matches else []
+        return {
+            "status": "success",
+            "project_id": project_id,
+            "found": len(matches) > 0,
+            "hub": matches[0] if matches else None,
+            "document_count": len(docs),
+            "documents": docs[:100],
+            "registry_url": hubs.get("webViewLink", ""),
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+        }
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/resolve-url")
+def resolve_url_get(request: Request, object_id: str, object_kind: str = "object"):
+    _check_token(request)
+    return {
+        "status": "success",
+        "object_id": object_id,
+        "object_kind": object_kind,
+        "url": _object_url(object_kind, object_id),
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+    }
+
 @app.get("/openapi-gpt.json")
 def openapi_gpt_json():
     return {
         "openapi": "3.1.0",
         "info": {
             "title": "AI_OS_DOCUMENT_AGENT_GPT_ACTIONS_COMPACT",
-            "version": "0.8.2",
-            "description": "Compact schema for AI_OS Commander GPT Actions."
+            "version": "0.9.0",
+            "description": "Compact schema for AI_OS Commander GPT Actions with Knowledge Persistence Layer."
         },
         "servers": [{"url": PUBLIC_BASE_URL}],
         "paths": {
@@ -1781,6 +2341,102 @@ def openapi_gpt_json():
                     "parameters": [
                         {"name": "query", "in": "query", "required": True, "schema": {"type": "string"}},
                         {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 5}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/documents": {
+                "post": {
+                    "operationId": "createDocument",
+                    "summary": "Create document registry record.",
+                    "requestBody": {
+                        "required": True,
+                        "content": {"application/json": {"schema": {
+                            "type": "object",
+                            "properties": {
+                                "title": {"type": "string"},
+                                "object_type": {"type": "string"},
+                                "document_category": {"type": "string"},
+                                "project_id": {"type": "string"},
+                                "status": {"type": "string"},
+                                "owner": {"type": "string"},
+                                "version": {"type": "string"},
+                                "content": {"type": "string"},
+                                "source_object_id": {"type": "string"},
+                                "related_objects": {"type": "array", "items": {"type": "string"}}
+                            },
+                            "required": ["title", "object_type", "document_category", "project_id"]
+                        }}}
+                    },
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/documents/{document_id}": {
+                "get": {
+                    "operationId": "getDocument",
+                    "summary": "Get document by ID.",
+                    "parameters": [{"name": "document_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Success"}}
+                },
+                "put": {
+                    "operationId": "updateDocument",
+                    "summary": "Append updated document version.",
+                    "parameters": [{"name": "document_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {"type": "object"}}}},
+                    "responses": {"200": {"description": "Success"}}
+                },
+                "delete": {
+                    "operationId": "deleteDocument",
+                    "summary": "Mark document as deleted.",
+                    "parameters": [{"name": "document_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/projects/{project_id}/documents": {
+                "get": {
+                    "operationId": "listProjectDocuments",
+                    "summary": "List project documents.",
+                    "parameters": [
+                        {"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}},
+                        {"name": "category", "in": "query", "required": False, "schema": {"type": "string"}},
+                        {"name": "limit", "in": "query", "required": False, "schema": {"type": "integer", "default": 100}}
+                    ],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/project-hubs": {
+                "post": {
+                    "operationId": "createProjectHub",
+                    "summary": "Create project hub.",
+                    "requestBody": {"required": True, "content": {"application/json": {"schema": {
+                        "type": "object",
+                        "properties": {
+                            "project_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "owner": {"type": "string"},
+                            "status": {"type": "string"},
+                            "overview": {"type": "string"}
+                        },
+                        "required": ["project_id"]
+                    }}}},
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/project-hubs/{project_id}": {
+                "get": {
+                    "operationId": "getProjectHub",
+                    "summary": "Get project hub.",
+                    "parameters": [{"name": "project_id", "in": "path", "required": True, "schema": {"type": "string"}}],
+                    "responses": {"200": {"description": "Success"}}
+                }
+            },
+            "/resolve-url": {
+                "get": {
+                    "operationId": "resolveUrl",
+                    "summary": "Resolve object URL.",
+                    "parameters": [
+                        {"name": "object_id", "in": "query", "required": True, "schema": {"type": "string"}},
+                        {"name": "object_kind", "in": "query", "required": False, "schema": {"type": "string", "default": "object"}}
                     ],
                     "responses": {"200": {"description": "Success"}}
                 }
