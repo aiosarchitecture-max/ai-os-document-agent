@@ -467,7 +467,18 @@ def _content_hash(content: str) -> str:
 
 
 def _object_url(kind: str, object_id: str) -> str:
-    kind = kind.strip("/").lower()
+    kind = (kind or "object").strip("/").lower()
+
+    # Compatibility fix:
+    # The API endpoint is /documents/{document_id}, not /document/{document_id}.
+    # Older records may still contain /document/... links, therefore we also keep
+    # a /document/{document_id} alias endpoint below.
+    if kind == "document":
+        kind = "documents"
+
+    if kind == "hub":
+        kind = "project-hubs"
+
     return f"{PUBLIC_BASE_URL}/{kind}/{object_id}"
 
 
@@ -1885,6 +1896,13 @@ async def create_document_post(request: Request, payload: DocumentRequest):
 
 @app.get("/documents/{document_id}")
 def get_document_get(request: Request, document_id: str):
+    _check_token(request)
+    return _get_document(document_id)
+
+
+# Backward-compatible alias for URLs already stored as /document/DOC-...
+@app.get("/document/{document_id}")
+def get_document_alias_get(request: Request, document_id: str):
     _check_token(request)
     return _get_document(document_id)
 
