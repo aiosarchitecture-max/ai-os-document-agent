@@ -14,11 +14,22 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_9_1_RECURSIVE_SEARCH"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V1_0_KNOWLEDGE_INDEX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
 DEFAULT_OWNER = "Daniel Valušiak"
+
+# Fast in-memory knowledge index.
+# Source of truth remains Google Drive; this cache only prevents /search from reading
+# hundreds of Google Docs on every request, which caused Render 503 timeouts.
+AI_OS_INDEX: Dict[str, Any] = {
+    "status": "empty",
+    "created_utc": None,
+    "document_count": 0,
+    "documents": [],
+    "errors": [],
+}
 
 SCOPES = [
     "https://www.googleapis.com/auth/drive",
@@ -28,7 +39,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.9.1",
+    version="1.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -372,6 +383,137 @@ def _list_ai_os_google_docs_recursive(drive_service, max_documents: int = 500) -
     return documents
 
 
+def _normalize_search_text(value: str) -> str:
+    return (value or "").lower().strip()
+
+
+def _build_ai_os_knowledge_index(
+    drive_service,
+    max_documents: int = 300,
+    max_chars_per_document: int = 8000,
+) -> Dict[str, Any]:
+    """Build a fast searchable index from Google Docs under AI_OS.
+
+    Important: /search must not read every Google Doc live.
+    It reads this index instead. This prevents Render 503 timeouts.
+    """
+    safe_limit = max(1, min(int(max_documents or 300), 800))
+    safe_chars = max(500, min(int(max_chars_per_document or 8000), 30000))
+
+    docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
+    indexed_documents: List[Dict[str, Any]] = []
+    errors: List[Dict[str, str]] = []
+
+    for item in docs:
+        document_id = item.get("id")
+        name = item.get("name", "")
+        text = ""
+        content_status = "not_read"
+        try:
+            text = _extract_text_from_doc(document_id) if document_id else ""
+            content_status = "read"
+        except Exception as exc:
+            errors.append({
+                "document_name": name,
+                "document_id": document_id,
+                "reason": str(exc)[:500],
+            })
+            content_status = "error"
+
+        indexed_documents.append({
+            "name": name,
+            "id": document_id,
+            "url": item.get("webViewLink", ""),
+            "parents": item.get("parents", []),
+            "content_status": content_status,
+            "text_length": len(text or ""),
+            "indexed_text": (text or "")[:safe_chars],
+        })
+
+    index = {
+        "status": "ready",
+        "created_utc": _now_iso(),
+        "created_local": _now_local_iso(),
+        "document_count": len(indexed_documents),
+        "max_documents": safe_limit,
+        "max_chars_per_document": safe_chars,
+        "documents": indexed_documents,
+        "errors": errors,
+    }
+    AI_OS_INDEX.clear()
+    AI_OS_INDEX.update(index)
+    return index
+
+
+def _compact_index_document(item: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "name": item.get("name"),
+        "id": item.get("id"),
+        "url": item.get("url"),
+        "parents": item.get("parents", []),
+        "content_status": item.get("content_status"),
+        "text_length": item.get("text_length", 0),
+    }
+
+
+def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 10), 50))
+    q = _normalize_search_text(query)
+    if not q:
+        raise HTTPException(status_code=400, detail="Query is required.")
+
+    if AI_OS_INDEX.get("status") != "ready":
+        return {
+            "status": "success",
+            "query": query,
+            "found": False,
+            "match_count": 0,
+            "matches": [],
+            "index_status": AI_OS_INDEX.get("status", "empty"),
+            "requires_refresh_index": True,
+            "note": "Knowledge index is empty. Run /refresh-index first, then repeat /search.",
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+
+    matches: List[Dict[str, Any]] = []
+    searched_count = 0
+    for item in AI_OS_INDEX.get("documents", []):
+        searched_count += 1
+        name = item.get("name", "")
+        text = item.get("indexed_text", "") or ""
+        name_match = q in _normalize_search_text(name)
+        text_match = q in _normalize_search_text(text)
+        if name_match or text_match:
+            matches.append({
+                "document_name": name,
+                "document_id": item.get("id"),
+                "document_url": item.get("url", ""),
+                "match_type": "name" if name_match and not text_match else "content",
+                "snippet": _snippet(text, query),
+                "text_length": item.get("text_length", 0),
+            })
+            if len(matches) >= safe_limit:
+                break
+
+    return {
+        "status": "success",
+        "query": query,
+        "found": len(matches) > 0,
+        "match_count": len(matches),
+        "matches": matches,
+        "index_status": AI_OS_INDEX.get("status"),
+        "index_created_utc": AI_OS_INDEX.get("created_utc"),
+        "indexed_document_count": AI_OS_INDEX.get("document_count", 0),
+        "searched_document_count": searched_count,
+        "index_error_count": len(AI_OS_INDEX.get("errors", [])),
+        "note": "v1.0 searches the prepared Knowledge Index. It does not read all Google Docs during each search request.",
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
+
 
 def _get_or_create_doc_by_name(drive_service, name: str, initial_text: Optional[str] = None) -> dict:
     existing = _find_optional_doc_by_name(drive_service, name)
@@ -693,7 +835,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v0.9.1 is online. Recursive AI_OS Drive search is enabled.",
+        "message": "AI OS Document Agent v1.0 is online. Fast Knowledge Index search is enabled.",
     }
 
 
@@ -999,14 +1141,15 @@ def _create_project(
 
 
 @app.get("/list-ai-os-documents")
-def list_ai_os_documents_get(request: Request, limit: int = 200):
+def list_ai_os_documents_get(request: Request, limit: int = 500):
     _check_token(request)
     try:
         drive_service = _drive()
-        safe_limit = max(1, min(int(limit or 200), 500))
+        safe_limit = max(1, min(int(limit or 500), 1000))
         docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
         return {
             "status": "success",
+            "action": "LIST_AI_OS_DOCUMENTS",
             "count": len(docs),
             "documents": [
                 {
@@ -1017,7 +1160,7 @@ def list_ai_os_documents_get(request: Request, limit: int = 200):
                 }
                 for item in docs
             ],
-            "note": "Lists all Google Docs under AI_OS root folder, including subfolders.",
+            "note": "Lists Google Docs under AI_OS root folder, including subfolders. This endpoint does not read document content.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1027,32 +1170,50 @@ def list_ai_os_documents_get(request: Request, limit: int = 200):
 
 
 @app.get("/refresh-index")
-def refresh_index_get(request: Request, limit: int = 500):
+def refresh_index_get(request: Request, limit: int = 300, max_chars: int = 8000):
     _check_token(request)
     try:
         drive_service = _drive()
-        safe_limit = max(1, min(int(limit or 500), 500))
-        docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
+        index = _build_ai_os_knowledge_index(
+            drive_service,
+            max_documents=limit,
+            max_chars_per_document=max_chars,
+        )
         return {
             "status": "success",
             "action": "REFRESH_INDEX",
-            "document_count": len(docs),
-            "documents": [
-                {
-                    "name": item.get("name"),
-                    "id": item.get("id"),
-                    "url": item.get("webViewLink", ""),
-                    "parents": item.get("parents", []),
-                }
-                for item in docs
-            ],
-            "note": "Index is live. This endpoint rescans all Google Docs under AI_OS root folder, including subfolders.",
+            "index_status": index.get("status"),
+            "document_count": index.get("document_count", 0),
+            "error_count": len(index.get("errors", [])),
+            "created_utc": index.get("created_utc"),
+            "created_local": index.get("created_local"),
+            "max_documents": index.get("max_documents"),
+            "max_chars_per_document": index.get("max_chars_per_document"),
+            "sample_documents": [_compact_index_document(item) for item in index.get("documents", [])[:20]],
+            "errors": index.get("errors", [])[:20],
+            "note": "Knowledge Index is ready. /search will now use this index and should not cause Render 503 by reading every Google Doc live.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
         }
     except HttpError as exc:
         raise HTTPException(status_code=500, detail=str(exc))
+
+
+@app.get("/index-status")
+def index_status_get(request: Request):
+    _check_token(request)
+    return {
+        "status": "success",
+        "index_status": AI_OS_INDEX.get("status", "empty"),
+        "created_utc": AI_OS_INDEX.get("created_utc"),
+        "document_count": AI_OS_INDEX.get("document_count", 0),
+        "error_count": len(AI_OS_INDEX.get("errors", [])),
+        "sample_documents": [_compact_index_document(item) for item in AI_OS_INDEX.get("documents", [])[:10]],
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
 
 
 @app.get("/search")
@@ -1068,62 +1229,7 @@ async def search_post(request: Request, payload: SearchRequest):
 
 
 def _search_ai_os(query: str, limit: int = 10):
-    if not query or not query.strip():
-        raise HTTPException(status_code=400, detail="Query is required.")
-
-    try:
-        drive_service = _drive()
-        matches: List[Dict[str, Any]] = []
-        searched_documents = []
-        skipped_documents = []
-
-        safe_limit = max(1, min(int(limit or 10), 50))
-        all_docs = _list_ai_os_google_docs_recursive(drive_service)
-
-        for file_info in all_docs:
-            if len(matches) >= safe_limit:
-                break
-
-            searched_documents.append(file_info["name"])
-            try:
-                text = _extract_text_from_doc(file_info["id"])
-            except HttpError as exc:
-                skipped_documents.append({
-                    "document_name": file_info.get("name"),
-                    "reason": str(exc)[:300],
-                })
-                continue
-
-            # Match both document name and document body. This allows Daniel to search
-            # by a known title even if the exact title is not repeated inside the body.
-            query_lower = query.lower()
-            name_match = query_lower in file_info.get("name", "").lower()
-            text_match = query_lower in text.lower()
-            if name_match or text_match:
-                matches.append({
-                    "document_name": file_info["name"],
-                    "document_id": file_info["id"],
-                    "document_url": file_info.get("webViewLink", ""),
-                    "match_type": "name" if name_match and not text_match else "content",
-                    "snippet": _snippet(text, query),
-                })
-
-        return {
-            "status": "success",
-            "query": query,
-            "found": len(matches) > 0,
-            "match_count": len(matches),
-            "matches": matches,
-            "searched_document_count": len(searched_documents),
-            "searched_documents": searched_documents,
-            "skipped_documents": skipped_documents,
-            "note": "v0.9.1 searches all Google Docs under AI_OS root folder, including subfolders. This is still simple full-text search, not semantic/vector search yet.",
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
-    except HttpError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+    return _search_in_knowledge_index(query=query, limit=limit)
 
 
 @app.get("/find-by-id")
