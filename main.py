@@ -14,7 +14,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_9_1_RECURSIVE_SEARCH"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V0_9_0_KNOWLEDGE_LAYER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -28,7 +28,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="0.9.1",
+    version="0.9.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -312,64 +312,6 @@ def _find_optional_doc_by_name(drive_service, name: str) -> Optional[dict]:
     ).execute()
     files = result.get("files", [])
     return files[0] if files else None
-
-
-def _list_children(drive_service, folder_id: str, mime_type: Optional[str] = None) -> List[dict]:
-    """Return direct children of one Google Drive folder. Supports shared-drive flags."""
-    q_parts = [
-        f"'{_safe_query_string(folder_id)}' in parents",
-        "trashed=false",
-    ]
-    if mime_type:
-        q_parts.append(f"mimeType='{mime_type}'")
-
-    items: List[dict] = []
-    page_token = None
-    while True:
-        result = drive_service.files().list(
-            q=" and ".join(q_parts),
-            fields="nextPageToken, files(id,name,mimeType,webViewLink,parents)",
-            pageSize=100,
-            pageToken=page_token,
-            supportsAllDrives=True,
-            includeItemsFromAllDrives=True,
-        ).execute()
-        items.extend(result.get("files", []))
-        page_token = result.get("nextPageToken")
-        if not page_token:
-            break
-    return items
-
-
-def _list_ai_os_google_docs_recursive(drive_service, max_documents: int = 500) -> List[dict]:
-    """Return all Google Docs under AI_OS root folder, including subfolders.
-
-    This replaces the old fixed SEARCH_DOCUMENT_NAMES search path for /search.
-    It keeps Google Drive as the source of truth: every Google document inside
-    the AI_OS folder tree becomes searchable without manually editing a list.
-    """
-    root_id = _root_folder_id()
-    folders_to_scan = [root_id]
-    scanned_folders = set()
-    documents: List[dict] = []
-
-    while folders_to_scan and len(documents) < max_documents:
-        folder_id = folders_to_scan.pop(0)
-        if folder_id in scanned_folders:
-            continue
-        scanned_folders.add(folder_id)
-
-        children = _list_children(drive_service, folder_id)
-        for item in children:
-            mime_type = item.get("mimeType")
-            if mime_type == "application/vnd.google-apps.folder":
-                folders_to_scan.append(item["id"])
-            elif mime_type == "application/vnd.google-apps.document":
-                documents.append(item)
-                if len(documents) >= max_documents:
-                    break
-
-    return documents
 
 
 
@@ -998,34 +940,6 @@ def _create_project(
         raise HTTPException(status_code=500, detail=str(exc))
 
 
-@app.get("/list-ai-os-documents")
-def list_ai_os_documents_get(request: Request, limit: int = 200):
-    _check_token(request)
-    try:
-        drive_service = _drive()
-        safe_limit = max(1, min(int(limit or 200), 500))
-        docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
-        return {
-            "status": "success",
-            "count": len(docs),
-            "documents": [
-                {
-                    "name": item.get("name"),
-                    "id": item.get("id"),
-                    "url": item.get("webViewLink", ""),
-                    "parents": item.get("parents", []),
-                }
-                for item in docs
-            ],
-            "note": "Lists all Google Docs under AI_OS root folder, including subfolders.",
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
-    except HttpError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-
-
 @app.get("/search")
 def search_get(request: Request, query: str, limit: int = 10):
     _check_token(request)
@@ -1046,36 +960,23 @@ def _search_ai_os(query: str, limit: int = 10):
         drive_service = _drive()
         matches: List[Dict[str, Any]] = []
         searched_documents = []
-        skipped_documents = []
+        missing_documents = []
 
-        safe_limit = max(1, min(int(limit or 10), 50))
-        all_docs = _list_ai_os_google_docs_recursive(drive_service)
-
-        for file_info in all_docs:
-            if len(matches) >= safe_limit:
+        for doc_name in SEARCH_DOCUMENT_NAMES:
+            if len(matches) >= limit:
                 break
 
-            searched_documents.append(file_info["name"])
-            try:
-                text = _extract_text_from_doc(file_info["id"])
-            except HttpError as exc:
-                skipped_documents.append({
-                    "document_name": file_info.get("name"),
-                    "reason": str(exc)[:300],
-                })
+            file_info = _find_optional_doc_by_name(drive_service, doc_name)
+            if not file_info:
+                missing_documents.append(doc_name)
                 continue
 
-            # Match both document name and document body. This allows Daniel to search
-            # by a known title even if the exact title is not repeated inside the body.
-            query_lower = query.lower()
-            name_match = query_lower in file_info.get("name", "").lower()
-            text_match = query_lower in text.lower()
-            if name_match or text_match:
+            searched_documents.append(doc_name)
+            text = _extract_text_from_doc(file_info["id"])
+            if query.lower() in text.lower():
                 matches.append({
                     "document_name": file_info["name"],
-                    "document_id": file_info["id"],
                     "document_url": file_info.get("webViewLink", ""),
-                    "match_type": "name" if name_match and not text_match else "content",
                     "snippet": _snippet(text, query),
                 })
 
@@ -1085,10 +986,9 @@ def _search_ai_os(query: str, limit: int = 10):
             "found": len(matches) > 0,
             "match_count": len(matches),
             "matches": matches,
-            "searched_document_count": len(searched_documents),
             "searched_documents": searched_documents,
-            "skipped_documents": skipped_documents,
-            "note": "v0.9.1 searches all Google Docs under AI_OS root folder, including subfolders. This is still simple full-text search, not semantic/vector search yet.",
+            "missing_documents": missing_documents,
+            "note": "v0.8.2 uses simple full-text search across selected Google Docs, not semantic/vector search yet.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
