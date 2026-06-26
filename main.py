@@ -14,7 +14,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V1_0_KNOWLEDGE_INDEX"
+APP_NAME = "AI_OS_DOCUMENT_AGENT_V1_0_1_FAST_INDEX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -39,7 +39,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.0",
+    version="1.0.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -389,45 +389,32 @@ def _normalize_search_text(value: str) -> str:
 
 def _build_ai_os_knowledge_index(
     drive_service,
-    max_documents: int = 300,
-    max_chars_per_document: int = 8000,
+    max_documents: int = 500,
+    max_chars_per_document: int = 0,
 ) -> Dict[str, Any]:
-    """Build a fast searchable index from Google Docs under AI_OS.
+    """Build a fast metadata index from Google Docs under AI_OS.
 
-    Important: /search must not read every Google Doc live.
-    It reads this index instead. This prevents Render 503 timeouts.
+    v1.0.1 change:
+    - /refresh-index no longer opens and reads every Google Doc.
+    - It indexes metadata only: name, id, url, parents.
+    - This prevents Render 502/503 timeouts on large AI_OS folders.
+    - /search uses this metadata index for fast name search and Google Drive
+      server-side fullText search for content search.
     """
-    safe_limit = max(1, min(int(max_documents or 300), 800))
-    safe_chars = max(500, min(int(max_chars_per_document or 8000), 30000))
+    safe_limit = max(1, min(int(max_documents or 500), 2000))
 
     docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
     indexed_documents: List[Dict[str, Any]] = []
-    errors: List[Dict[str, str]] = []
 
     for item in docs:
-        document_id = item.get("id")
-        name = item.get("name", "")
-        text = ""
-        content_status = "not_read"
-        try:
-            text = _extract_text_from_doc(document_id) if document_id else ""
-            content_status = "read"
-        except Exception as exc:
-            errors.append({
-                "document_name": name,
-                "document_id": document_id,
-                "reason": str(exc)[:500],
-            })
-            content_status = "error"
-
         indexed_documents.append({
-            "name": name,
-            "id": document_id,
+            "name": item.get("name", ""),
+            "id": item.get("id"),
             "url": item.get("webViewLink", ""),
             "parents": item.get("parents", []),
-            "content_status": content_status,
-            "text_length": len(text or ""),
-            "indexed_text": (text or "")[:safe_chars],
+            "content_status": "metadata_only",
+            "text_length": 0,
+            "indexed_text": "",
         })
 
     index = {
@@ -436,14 +423,13 @@ def _build_ai_os_knowledge_index(
         "created_local": _now_local_iso(),
         "document_count": len(indexed_documents),
         "max_documents": safe_limit,
-        "max_chars_per_document": safe_chars,
+        "max_chars_per_document": 0,
         "documents": indexed_documents,
-        "errors": errors,
+        "errors": [],
     }
     AI_OS_INDEX.clear()
     AI_OS_INDEX.update(index)
     return index
-
 
 def _compact_index_document(item: Dict[str, Any]) -> Dict[str, Any]:
     return {
@@ -478,24 +464,71 @@ def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
         }
 
     matches: List[Dict[str, Any]] = []
-    searched_count = 0
-    for item in AI_OS_INDEX.get("documents", []):
-        searched_count += 1
+    seen_ids = set()
+    indexed_docs = AI_OS_INDEX.get("documents", [])
+    indexed_ids = {item.get("id") for item in indexed_docs if item.get("id")}
+
+    # 1) Fast local search by document name from the AI_OS metadata index.
+    for item in indexed_docs:
         name = item.get("name", "")
-        text = item.get("indexed_text", "") or ""
-        name_match = q in _normalize_search_text(name)
-        text_match = q in _normalize_search_text(text)
-        if name_match or text_match:
+        if q in _normalize_search_text(name):
+            doc_id = item.get("id")
+            seen_ids.add(doc_id)
             matches.append({
                 "document_name": name,
-                "document_id": item.get("id"),
+                "document_id": doc_id,
                 "document_url": item.get("url", ""),
-                "match_type": "name" if name_match and not text_match else "content",
-                "snippet": _snippet(text, query),
-                "text_length": item.get("text_length", 0),
+                "match_type": "name",
+                "snippet": name,
+                "text_length": 0,
             })
             if len(matches) >= safe_limit:
                 break
+
+    # 2) If needed, use Google Drive server-side fullText search.
+    # This avoids opening hundreds of documents from Python/Render.
+    if len(matches) < safe_limit:
+        try:
+            drive_service = _drive()
+            escaped_query = _safe_query_string(query.strip())
+            drive_q = (
+                "mimeType='application/vnd.google-apps.document' and "
+                "trashed=false and "
+                f"(name contains '{escaped_query}' or fullText contains '{escaped_query}')"
+            )
+            result = drive_service.files().list(
+                q=drive_q,
+                fields="files(id,name,mimeType,webViewLink,parents)",
+                pageSize=min(100, safe_limit * 5),
+                supportsAllDrives=True,
+                includeItemsFromAllDrives=True,
+            ).execute()
+
+            for file_info in result.get("files", []):
+                doc_id = file_info.get("id")
+                if doc_id in seen_ids:
+                    continue
+                # Keep results inside the AI_OS tree only. The metadata index is the boundary.
+                if indexed_ids and doc_id not in indexed_ids:
+                    continue
+                seen_ids.add(doc_id)
+                matches.append({
+                    "document_name": file_info.get("name"),
+                    "document_id": doc_id,
+                    "document_url": file_info.get("webViewLink", ""),
+                    "match_type": "drive_fulltext_or_name",
+                    "snippet": "Nájdené cez Google Drive serverové vyhľadávanie. Detailný text otvor cez document_id alebo Google URL.",
+                    "text_length": 0,
+                })
+                if len(matches) >= safe_limit:
+                    break
+        except Exception as exc:
+            # Search should not crash the agent if Drive fullText has a temporary problem.
+            drive_search_error = str(exc)[:500]
+        else:
+            drive_search_error = None
+    else:
+        drive_search_error = None
 
     return {
         "status": "success",
@@ -506,14 +539,14 @@ def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
         "index_status": AI_OS_INDEX.get("status"),
         "index_created_utc": AI_OS_INDEX.get("created_utc"),
         "indexed_document_count": AI_OS_INDEX.get("document_count", 0),
-        "searched_document_count": searched_count,
+        "searched_document_count": len(indexed_docs),
         "index_error_count": len(AI_OS_INDEX.get("errors", [])),
-        "note": "v1.0 searches the prepared Knowledge Index. It does not read all Google Docs during each search request.",
+        "drive_search_error": drive_search_error,
+        "note": "v1.0.1 searches the fast AI_OS metadata index by name and uses Google Drive fullText search for content without reading every document live.",
         "time_utc": _now_iso(),
         "time_local": _now_local_iso(),
         "timezone": AI_OS_TIMEZONE_NAME,
     }
-
 
 def _get_or_create_doc_by_name(drive_service, name: str, initial_text: Optional[str] = None) -> dict:
     existing = _find_optional_doc_by_name(drive_service, name)
@@ -835,7 +868,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v1.0 is online. Fast Knowledge Index search is enabled.",
+        "message": "AI OS Document Agent v1.0.1 is online. Fast AI_OS metadata index and Drive search are enabled.",
     }
 
 
@@ -1170,7 +1203,7 @@ def list_ai_os_documents_get(request: Request, limit: int = 500):
 
 
 @app.get("/refresh-index")
-def refresh_index_get(request: Request, limit: int = 300, max_chars: int = 8000):
+def refresh_index_get(request: Request, limit: int = 500, max_chars: int = 0):
     _check_token(request)
     try:
         drive_service = _drive()
@@ -1191,7 +1224,7 @@ def refresh_index_get(request: Request, limit: int = 300, max_chars: int = 8000)
             "max_chars_per_document": index.get("max_chars_per_document"),
             "sample_documents": [_compact_index_document(item) for item in index.get("documents", [])[:20]],
             "errors": index.get("errors", [])[:20],
-            "note": "Knowledge Index is ready. /search will now use this index and should not cause Render 503 by reading every Google Doc live.",
+            "note": "Fast metadata index is ready. /search will use document names from the index and Google Drive server-side fullText search for content.",
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
