@@ -2975,3 +2975,63 @@ def openapi_gpt_json():
             }
         }
     }
+POSTUP NASADENIA – OPRAVA 404 ORCHESTRATOR
+
+Zistenie:
+V main.py endpointy /orchestrator/health a /orchestrator/ask už existujú.
+Ak URL vracia 404, Render nespustil tento main.py. Posledný deploy zlyhal a beží staršia verzia.
+
+Urob presne toto:
+
+1. V GitHube v existujúcom repozitári ai-os-document-agent nahraď:
+   - main.py
+   - requirements.txt
+   - render.yaml
+
+2. Commit message:
+   Deploy AI_OS_ORCHESTRATOR_V1_1_CORE
+
+3. V Renderi otvor službu ai-os-document-agent.
+
+4. Klikni:
+   Manual Deploy
+   → Deploy latest commit
+
+5. Počkaj, kým deploy skončí zeleným stavom Live.
+
+6. Testuj tieto adresy:
+
+https://ai-os-document-agent.onrender.com/
+
+Očakávané:
+AI_OS_ORCHESTRATOR_V1_1_CORE
+
+https://ai-os-document-agent.onrender.com/orchestrator/health
+
+Očakávané:
+orchestrator: enabled
+
+https://ai-os-document-agent.onrender.com/refresh-index
+
+https://ai-os-document-agent.onrender.com/orchestrator/ask?message=Nájdi%20dokumenty%20o%20orchestrátorovi&limit=5
+
+Ak deploy opäť zlyhá:
+Render → Logs → skopíruj prvých 30 riadkov chyby. Nie Events, ale Logs.
+
+services:
+- type: web
+  name: ai-os-document-agent
+  env: python
+  plan: free
+  buildCommand: pip install --upgrade pip && pip install -r requirements.txt
+  startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+
+fastapi
+uvicorn
+httpx
+pydantic
+python-dotenv
+google-api-python-client
+google-auth
+google-auth-httplib2
+google-auth-oauthlib
