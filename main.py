@@ -2975,37 +2975,3 @@ def openapi_gpt_json():
             }
         }
     }
-
-OPRAVA HOTOVÁ
-
-Opravené:
-- z main.py bol odstránený omylom vložený text návodu od riadku POSTUP NASADENIA.
-- syntax main.py bola lokálne overená cez compile().
-
-Nahraď v GitHube:
-1. main.py
-2. requirements.txt
-3. render.yaml
-
-Potom:
-Render -> Manual Deploy -> Deploy latest commit
-
-Testy:
-https://ai-os-document-agent.onrender.com/
-https://ai-os-document-agent.onrender.com/orchestrator/health
-https://ai-os-document-agent.onrender.com/orchestrator/ask?message=Nájdi%20dokumenty%20o%20orchestrátorovi&limit=5
-
-services:
-- type: web
-  name: ai-os-document-agent
-  env: python
-  plan: free
-  buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-  startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-
-fastapi
-uvicorn
-httpx
-pydantic
-google-api-python-client
-google-auth
