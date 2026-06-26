@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import httpx
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
@@ -14,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_DOCUMENT_AGENT_V1_0_1_FAST_INDEX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_1_CORE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -39,7 +40,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.0.1",
+    version="1.1.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -148,6 +149,15 @@ class ProjectHubRequest(BaseModel):
     owner: Optional[str] = DEFAULT_OWNER
     status: Optional[str] = "ACTIVE"
     overview: Optional[str] = None
+
+
+
+class OrchestratorRequest(BaseModel):
+    message: str
+    write_result: Optional[bool] = False
+    result_title: Optional[str] = None
+    project_id: Optional[str] = "AI_OS"
+    limit: Optional[int] = 5
 
 
 
@@ -868,7 +878,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI OS Document Agent v1.0.1 is online. Fast AI_OS metadata index and Drive search are enabled.",
+        "message": "AI_OS Orchestrator v1.1 is online. It uses AI_OS Knowledge Index, Document Registry and optional OpenAI API.",
     }
 
 
@@ -1263,6 +1273,235 @@ async def search_post(request: Request, payload: SearchRequest):
 
 def _search_ai_os(query: str, limit: int = 10):
     return _search_in_knowledge_index(query=query, limit=limit)
+
+
+# -----------------------------------------------------------------------------
+# AI_OS ORCHESTRATOR v1.1
+# -----------------------------------------------------------------------------
+# Purpose:
+# Daniel talks to one entry point: /orchestrator/ask.
+# Orchestrator uses existing AI_OS Knowledge Index + Document Agent functions.
+# If OPENAI_API_KEY is configured, it calls OpenAI Responses API as reasoning engine.
+# If not configured, it still works in deterministic mode and returns document-based results.
+
+ORCHESTRATOR_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+ORCHESTRATOR_RESULT_CATEGORY = "ORCHESTRATOR_RESULT"
+
+ORCHESTRATOR_SYSTEM_PROMPT = """
+Si AI_OS Orchestrátor, riaditeľ digitálneho podniku Daniela Valušiaka.
+Komunikuj po slovensky. Buď stručný, praktický a vykonávací.
+Tvoj zdroj pravdy je Google Drive cez AI_OS Document Agent.
+Nikdy nevymýšľaj neoverené fakty. Ak nevieš, povedz čo chýba.
+Najprv použi dostupné dokumenty, potom navrhni ďalší konkrétny krok.
+Ak používateľ žiada výkon, vráť vykonateľný výsledok, nie teóriu.
+""".strip()
+
+
+def _orchestrator_compact_matches(search_result: Dict[str, Any], max_items: int = 5) -> List[Dict[str, Any]]:
+    items = []
+    for match in (search_result or {}).get("matches", [])[:max_items]:
+        items.append({
+            "title": match.get("document_name") or match.get("title") or "",
+            "url": match.get("document_url") or match.get("url") or "",
+            "score": match.get("score"),
+            "match_type": match.get("match_type"),
+            "snippet": (match.get("snippet") or "")[:1200],
+        })
+    return items
+
+
+def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
+    safe_limit = max(1, min(int(limit or 5), 10))
+    search_result = _search_ai_os(query=message, limit=safe_limit)
+    matches = _orchestrator_compact_matches(search_result, safe_limit)
+    return {
+        "query": message,
+        "search_found": search_result.get("found"),
+        "match_count": search_result.get("match_count", 0),
+        "matches": matches,
+        "index_status": search_result.get("index_status"),
+        "requires_refresh_index": search_result.get("requires_refresh_index", False),
+    }
+
+
+def _orchestrator_context_text(context: Dict[str, Any]) -> str:
+    lines = []
+    lines.append(f"Dotaz: {context.get('query')}")
+    lines.append(f"Nájdené dokumenty: {context.get('match_count', 0)}")
+    for i, item in enumerate(context.get("matches", []), start=1):
+        lines.append(f"\n[{i}] {item.get('title')}")
+        if item.get("url"):
+            lines.append(f"URL: {item.get('url')}")
+        if item.get("score") is not None:
+            lines.append(f"Skóre: {item.get('score')}")
+        if item.get("snippet"):
+            lines.append(f"Úryvok: {item.get('snippet')}")
+    return "\n".join(lines)
+
+
+async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optional[str]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
+    user_prompt = (
+        "Úloha od Daniela:\n"
+        f"{message}\n\n"
+        "Dostupný kontext z AI_OS dokumentov:\n"
+        f"{_orchestrator_context_text(context)}\n\n"
+        "Vráť: 1) odpoveď, 2) použité dokumenty, 3) ďalší konkrétny krok."
+    )
+
+    payload = {
+        "model": ORCHESTRATOR_MODEL,
+        "input": [
+            {"role": "system", "content": [{"type": "input_text", "text": ORCHESTRATOR_SYSTEM_PROMPT}]},
+            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+        ],
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            "https://api.openai.com/v1/responses",
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+            },
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise HTTPException(status_code=502, detail=f"OpenAI API error: {response.text[:1000]}")
+
+    data = response.json()
+    if data.get("output_text"):
+        return data["output_text"]
+
+    # Fallback parser for structured Responses API output.
+    texts = []
+    for item in data.get("output", []) or []:
+        for content in item.get("content", []) or []:
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                texts.append(content["text"])
+    return "\n".join(texts).strip() if texts else json.dumps(data, ensure_ascii=False)[:4000]
+
+
+def _orchestrator_deterministic_answer(message: str, context: Dict[str, Any]) -> str:
+    matches = context.get("matches", [])
+    if context.get("requires_refresh_index"):
+        return (
+            "Index dokumentov je prázdny. Najprv otvor: "
+            "https://ai-os-document-agent.onrender.com/refresh-index "
+            "a potom zopakuj požiadavku."
+        )
+    if not matches:
+        return (
+            "Nenašiel som relevantný dokument v AI_OS indexe. "
+            "Skús presnejší názov dokumentu alebo najprv obnov index cez /refresh-index."
+        )
+
+    lines = [
+        "Našiel som tieto najbližšie dokumenty v AI_OS:",
+    ]
+    for i, item in enumerate(matches, start=1):
+        lines.append(f"{i}. {item.get('title')}")
+        if item.get("url"):
+            lines.append(f"   {item.get('url')}")
+        if item.get("snippet"):
+            lines.append(f"   Úryvok: {item.get('snippet')[:300]}")
+    lines.append("\nĎalší krok: povedz mi, ktorý dokument mám otvoriť alebo čo mám z výsledkov spracovať.")
+    return "\n".join(lines)
+
+
+async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="message is required.")
+
+    message = payload.message.strip()
+    context = _orchestrator_build_context(message=message, limit=payload.limit or 5)
+    answer = await _call_openai_reasoning(message, context)
+    reasoning_engine = "openai" if answer else "deterministic"
+    if not answer:
+        answer = _orchestrator_deterministic_answer(message, context)
+
+    saved_document = None
+    if payload.write_result:
+        title = payload.result_title or f"AI_OS_ORCHESTRATOR_RESULT_{_today_id_date()}"
+        doc_payload = DocumentRequest(
+            title=title,
+            object_type="DOCUMENT",
+            document_category=ORCHESTRATOR_RESULT_CATEGORY,
+            project_id=(payload.project_id or "AI_OS"),
+            status="APPROVED",
+            owner=DEFAULT_OWNER,
+            version="1.0",
+            content=(
+                "AI_OS_ORCHESTRATOR_RESULT\n"
+                + _timestamp_block("Created")
+                + f"USER_MESSAGE:\n{message}\n\n"
+                + f"REASONING_ENGINE: {reasoning_engine}\n\n"
+                + f"ANSWER:\n{answer}\n\n"
+                + "CONTEXT:\n"
+                + json.dumps(context, ensure_ascii=False, indent=2)
+            ),
+            source_object_id="AI_OS_ORCHESTRATOR",
+            related_objects=[],
+        )
+        saved_document = _create_document(doc_payload)
+
+    return {
+        "status": "success",
+        "service": APP_NAME,
+        "action": "ORCHESTRATE",
+        "message": message,
+        "reasoning_engine": reasoning_engine,
+        "answer": answer,
+        "context": context,
+        "saved_document": saved_document,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
+
+
+@app.get("/orchestrator/health")
+def orchestrator_health_get(request: Request):
+    _check_token(request)
+    return {
+        "status": "ok",
+        "service": APP_NAME,
+        "orchestrator": "enabled",
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "model": ORCHESTRATOR_MODEL if os.getenv("OPENAI_API_KEY") else None,
+        "document_agent_internal": True,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+    }
+
+
+@app.get("/orchestrator/ask")
+async def orchestrator_ask_get(
+    request: Request,
+    message: str,
+    write_result: bool = False,
+    result_title: Optional[str] = None,
+    project_id: str = "AI_OS",
+    limit: int = 5,
+):
+    _check_token(request)
+    return await _orchestrate(OrchestratorRequest(
+        message=message,
+        write_result=write_result,
+        result_title=result_title,
+        project_id=project_id,
+        limit=limit,
+    ))
+
+
+@app.post("/orchestrator/ask")
+async def orchestrator_ask_post(request: Request, payload: OrchestratorRequest):
+    _check_token(request)
+    return await _orchestrate(payload)
 
 
 @app.get("/find-by-id")
