@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_1_CORE"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_1_1_AUTO_INDEX_CORE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -40,7 +40,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.1.0",
+    version="1.1.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -452,11 +452,48 @@ def _compact_index_document(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _ensure_ai_os_index_ready(max_documents: int = 500) -> Dict[str, Any]:
+    """Ensure the in-memory index exists before /search or /orchestrator/ask.
+
+    Render free services can restart or route requests after inactivity. The old version
+    required manual /refresh-index after every restart. This version rebuilds the fast
+    metadata index automatically on first search/orchestrator request if it is empty.
+    """
+    if AI_OS_INDEX.get("status") == "ready" and AI_OS_INDEX.get("documents"):
+        return AI_OS_INDEX
+
+    drive_service = _drive()
+    return _build_ai_os_knowledge_index(
+        drive_service,
+        max_documents=max_documents,
+        max_chars_per_document=0,
+    )
+
+
 def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
     safe_limit = max(1, min(int(limit or 10), 50))
     q = _normalize_search_text(query)
     if not q:
         raise HTTPException(status_code=400, detail="Query is required.")
+
+    if AI_OS_INDEX.get("status") != "ready" or not AI_OS_INDEX.get("documents"):
+        try:
+            _ensure_ai_os_index_ready(max_documents=500)
+        except Exception as exc:
+            return {
+                "status": "success",
+                "query": query,
+                "found": False,
+                "match_count": 0,
+                "matches": [],
+                "index_status": AI_OS_INDEX.get("status", "empty"),
+                "requires_refresh_index": True,
+                "auto_refresh_error": str(exc)[:800],
+                "note": "Knowledge index is empty and automatic refresh failed. Run /refresh-index and check Render logs if this repeats.",
+                "time_utc": _now_iso(),
+                "time_local": _now_local_iso(),
+                "timezone": AI_OS_TIMEZONE_NAME,
+            }
 
     if AI_OS_INDEX.get("status") != "ready":
         return {
@@ -878,7 +915,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.1 is online. It uses AI_OS Knowledge Index, Document Registry and optional OpenAI API.",
+        "message": "AI_OS Orchestrator v1.1.1 is online. Auto-index fallback is enabled. It uses AI_OS Knowledge Index, Document Registry and optional OpenAI API.",
     }
 
 
