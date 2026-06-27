@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_1_1_AUTO_INDEX_CORE"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_2_1_FREE_FIRST_PROVIDER_ROUTER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -40,7 +40,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.1.1",
+    version="1.2.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -915,7 +915,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.1.1 is online. Auto-index fallback is enabled. It uses AI_OS Knowledge Index, Document Registry and optional OpenAI API.",
+        "message": "AI_OS Orchestrator v1.2.1 is online. Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
     }
 
 
@@ -1313,15 +1313,26 @@ def _search_ai_os(query: str, limit: int = 10):
 
 
 # -----------------------------------------------------------------------------
-# AI_OS ORCHESTRATOR v1.1
+# AI_OS ORCHESTRATOR v1.2
 # -----------------------------------------------------------------------------
 # Purpose:
 # Daniel talks to one entry point: /orchestrator/ask.
 # Orchestrator uses existing AI_OS Knowledge Index + Document Agent functions.
-# If OPENAI_API_KEY is configured, it calls OpenAI Responses API as reasoning engine.
-# If not configured, it still works in deterministic mode and returns document-based results.
+# AI Provider Router tries configured AI providers in a safe order.
+# Default policy is FREE-FIRST:
+#   1) Gemini Flash (free quota where available)
+#   2) OpenAI (paid fallback)
+#   3) deterministic fallback
+# You can override it in Render with:
+#   PRIMARY_AI_PROVIDER=gemini   # default, free-first
+#   PRIMARY_AI_PROVIDER=openai   # paid-first, only if deliberately needed
+#   AI_PROVIDER_ORDER=gemini,openai  # optional explicit order
+# This keeps one practical agent now, while preparing AI_OS for provider neutrality.
 
-ORCHESTRATOR_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+PRIMARY_AI_PROVIDER = os.getenv("PRIMARY_AI_PROVIDER", os.getenv("AI_PROVIDER", "gemini")).strip().lower()
+AI_PROVIDER_ORDER = os.getenv("AI_PROVIDER_ORDER")
 ORCHESTRATOR_RESULT_CATEGORY = "ORCHESTRATOR_RESULT"
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
@@ -1332,6 +1343,48 @@ Nikdy nevymýšľaj neoverené fakty. Ak nevieš, povedz čo chýba.
 Najprv použi dostupné dokumenty, potom navrhni ďalší konkrétny krok.
 Ak používateľ žiada výkon, vráť vykonateľný výsledok, nie teóriu.
 """.strip()
+
+
+def _configured_provider_order() -> List[str]:
+    """Return provider order without duplicates.
+
+    Policy:
+    - If AI_PROVIDER_ORDER is set, respect it.
+    - Otherwise use PRIMARY_AI_PROVIDER first.
+    - Default PRIMARY_AI_PROVIDER is gemini, so the free/quota-friendly provider is tried first.
+    - OpenAI is used only as fallback unless PRIMARY_AI_PROVIDER=openai or explicit order says so.
+    """
+    allowed = {"openai", "gemini"}
+
+    if AI_PROVIDER_ORDER:
+        raw_order = AI_PROVIDER_ORDER
+    else:
+        primary = PRIMARY_AI_PROVIDER if PRIMARY_AI_PROVIDER in allowed else "gemini"
+        fallback = "openai" if primary == "gemini" else "gemini"
+        raw_order = f"{primary},{fallback}"
+
+    providers: List[str] = []
+    for raw in raw_order.split(","):
+        provider = raw.strip().lower()
+        if provider in allowed and provider not in providers:
+            providers.append(provider)
+
+    return providers or ["gemini", "openai"]
+
+
+def _provider_status() -> Dict[str, Any]:
+    provider_order = _configured_provider_order()
+    return {
+        "router": "enabled",
+        "routing_policy": "free_first_unless_overridden",
+        "primary_ai_provider": provider_order[0] if provider_order else "deterministic",
+        "provider_order": provider_order,
+        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
+        "openai_model": OPENAI_MODEL if os.getenv("OPENAI_API_KEY") else None,
+        "gemini_configured": bool(os.getenv("GEMINI_API_KEY")),
+        "gemini_model": GEMINI_MODEL if os.getenv("GEMINI_API_KEY") else None,
+        "deterministic_fallback": True,
+    }
 
 
 def _orchestrator_compact_matches(search_result: Dict[str, Any], max_items: int = 5) -> List[Dict[str, Any]]:
@@ -1376,12 +1429,8 @@ def _orchestrator_context_text(context: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optional[str]:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return None
-
-    user_prompt = (
+def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
+    return (
         "Úloha od Daniela:\n"
         f"{message}\n\n"
         "Dostupný kontext z AI_OS dokumentov:\n"
@@ -1389,11 +1438,43 @@ async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optio
         "Vráť: 1) odpoveď, 2) použité dokumenty, 3) ďalší konkrétny krok."
     )
 
+
+def _safe_error_text(exc: Exception, limit: int = 800) -> str:
+    """Return short safe error text without secrets."""
+    text = str(exc)
+    openai_key = os.getenv("OPENAI_API_KEY") or ""
+    gemini_key = os.getenv("GEMINI_API_KEY") or ""
+    for secret in (openai_key, gemini_key):
+        if secret:
+            text = text.replace(secret, "***")
+    return text[:limit]
+
+
+def _response_error_summary(provider: str, response: httpx.Response) -> str:
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            error = data.get("error")
+            if isinstance(error, dict):
+                message = error.get("message") or error.get("status") or str(error)
+                code = error.get("code") or error.get("type") or response.status_code
+                return f"{provider} API error {response.status_code} ({code}): {message}"
+            return f"{provider} API error {response.status_code}: {json.dumps(data, ensure_ascii=False)[:800]}"
+    except Exception:
+        pass
+    return f"{provider} API error {response.status_code}: {response.text[:800]}"
+
+
+async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optional[str]:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return None
+
     payload = {
-        "model": ORCHESTRATOR_MODEL,
+        "model": OPENAI_MODEL,
         "input": [
             {"role": "system", "content": [{"type": "input_text", "text": ORCHESTRATOR_SYSTEM_PROMPT}]},
-            {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+            {"role": "user", "content": [{"type": "input_text", "text": _orchestrator_user_prompt(message, context)}]},
         ],
     }
 
@@ -1408,7 +1489,7 @@ async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optio
         )
 
     if response.status_code >= 400:
-        raise HTTPException(status_code=502, detail=f"OpenAI API error: {response.text[:1000]}")
+        raise RuntimeError(_response_error_summary("OpenAI", response))
 
     data = response.json()
     if data.get("output_text"):
@@ -1421,6 +1502,86 @@ async def _call_openai_reasoning(message: str, context: Dict[str, Any]) -> Optio
             if content.get("type") in ("output_text", "text") and content.get("text"):
                 texts.append(content["text"])
     return "\n".join(texts).strip() if texts else json.dumps(data, ensure_ascii=False)[:4000]
+
+
+async def _call_gemini_reasoning(message: str, context: Dict[str, Any]) -> Optional[str]:
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        return None
+
+    endpoint = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    payload = {
+        "systemInstruction": {
+            "parts": [{"text": ORCHESTRATOR_SYSTEM_PROMPT}]
+        },
+        "contents": [
+            {
+                "role": "user",
+                "parts": [{"text": _orchestrator_user_prompt(message, context)}],
+            }
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+        },
+    }
+
+    async with httpx.AsyncClient(timeout=60) as client:
+        response = await client.post(
+            endpoint,
+            params={"key": api_key},
+            headers={"Content-Type": "application/json"},
+            json=payload,
+        )
+
+    if response.status_code >= 400:
+        raise RuntimeError(_response_error_summary("Gemini", response))
+
+    data = response.json()
+    texts = []
+    for candidate in data.get("candidates", []) or []:
+        content = candidate.get("content") or {}
+        for part in content.get("parts", []) or []:
+            if part.get("text"):
+                texts.append(part["text"])
+    return "\n".join(texts).strip() if texts else json.dumps(data, ensure_ascii=False)[:4000]
+
+
+async def _call_ai_reasoning(message: str, context: Dict[str, Any]) -> Dict[str, Any]:
+    """Try configured AI providers in order. Never crash the orchestrator if a provider fails."""
+    attempts: List[Dict[str, Any]] = []
+
+    for provider in _configured_provider_order():
+        try:
+            if provider == "openai":
+                if not os.getenv("OPENAI_API_KEY"):
+                    attempts.append({"provider": "openai", "status": "skipped", "reason": "OPENAI_API_KEY not configured"})
+                    continue
+                answer = await _call_openai_reasoning(message, context)
+                if answer:
+                    attempts.append({"provider": "openai", "status": "success", "model": OPENAI_MODEL})
+                    return {"answer": answer, "reasoning_engine": "openai", "model": OPENAI_MODEL, "attempts": attempts}
+                attempts.append({"provider": "openai", "status": "empty_response", "model": OPENAI_MODEL})
+
+            elif provider == "gemini":
+                if not os.getenv("GEMINI_API_KEY"):
+                    attempts.append({"provider": "gemini", "status": "skipped", "reason": "GEMINI_API_KEY not configured"})
+                    continue
+                answer = await _call_gemini_reasoning(message, context)
+                if answer:
+                    attempts.append({"provider": "gemini", "status": "success", "model": GEMINI_MODEL})
+                    return {"answer": answer, "reasoning_engine": "gemini", "model": GEMINI_MODEL, "attempts": attempts}
+                attempts.append({"provider": "gemini", "status": "empty_response", "model": GEMINI_MODEL})
+
+        except Exception as exc:
+            attempts.append({
+                "provider": provider,
+                "status": "failed",
+                "model": OPENAI_MODEL if provider == "openai" else GEMINI_MODEL,
+                "error": _safe_error_text(exc),
+            })
+            continue
+
+    return {"answer": None, "reasoning_engine": "deterministic", "model": None, "attempts": attempts}
 
 
 def _orchestrator_deterministic_answer(message: str, context: Dict[str, Any]) -> str:
@@ -1456,10 +1617,17 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
 
     message = payload.message.strip()
     context = _orchestrator_build_context(message=message, limit=payload.limit or 5)
-    answer = await _call_openai_reasoning(message, context)
-    reasoning_engine = "openai" if answer else "deterministic"
+
+    ai_result = await _call_ai_reasoning(message, context)
+    answer = ai_result.get("answer")
+    reasoning_engine = ai_result.get("reasoning_engine") or "deterministic"
+    reasoning_model = ai_result.get("model")
+    provider_attempts = ai_result.get("attempts", [])
+
     if not answer:
         answer = _orchestrator_deterministic_answer(message, context)
+        reasoning_engine = "deterministic"
+        reasoning_model = None
 
     saved_document = None
     if payload.write_result:
@@ -1476,8 +1644,12 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
                 "AI_OS_ORCHESTRATOR_RESULT\n"
                 + _timestamp_block("Created")
                 + f"USER_MESSAGE:\n{message}\n\n"
-                + f"REASONING_ENGINE: {reasoning_engine}\n\n"
-                + f"ANSWER:\n{answer}\n\n"
+                + f"REASONING_ENGINE: {reasoning_engine}\n"
+                + f"REASONING_MODEL: {reasoning_model}\n"
+                + "PROVIDER_ATTEMPTS:\n"
+                + json.dumps(provider_attempts, ensure_ascii=False, indent=2)
+                + "\n\nANSWER:\n"
+                + f"{answer}\n\n"
                 + "CONTEXT:\n"
                 + json.dumps(context, ensure_ascii=False, indent=2)
             ),
@@ -1492,6 +1664,8 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "action": "ORCHESTRATE",
         "message": message,
         "reasoning_engine": reasoning_engine,
+        "reasoning_model": reasoning_model,
+        "provider_attempts": provider_attempts,
         "answer": answer,
         "context": context,
         "saved_document": saved_document,
@@ -1504,12 +1678,15 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
 @app.get("/orchestrator/health")
 def orchestrator_health_get(request: Request):
     _check_token(request)
+    status = _provider_status()
     return {
         "status": "ok",
         "service": APP_NAME,
         "orchestrator": "enabled",
-        "openai_configured": bool(os.getenv("OPENAI_API_KEY")),
-        "model": ORCHESTRATOR_MODEL if os.getenv("OPENAI_API_KEY") else None,
+        **status,
+        # Backward compatibility with earlier health checks:
+        "openai_configured": status["openai_configured"],
+        "model": status["openai_model"],
         "document_agent_internal": True,
         "time_utc": _now_iso(),
         "time_local": _now_local_iso(),
