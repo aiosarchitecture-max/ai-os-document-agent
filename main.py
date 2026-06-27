@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_2_1_FREE_FIRST_PROVIDER_ROUTER"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_2_2_MASTER_STATE_READER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -40,7 +40,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.2.1",
+    version="1.2.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -169,6 +169,7 @@ SEARCH_DOCUMENT_NAMES = [
     "AI_OS_PROJECTS",
     "AI_OS_ROADMAP",
     "AI_OS_MASTER",
+    "AI_OS_MASTER_STATE",
     "AI_OS_SYSTEM_TEST",
     "AI_OS_RELATIONS",
     "AI_OS_OBJECT_TYPES",
@@ -915,7 +916,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.2.1 is online. Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
+        "message": "AI_OS Orchestrator v1.2.2 is online. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS_MASTER_STATE, AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
     }
 
 
@@ -1334,11 +1335,13 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 PRIMARY_AI_PROVIDER = os.getenv("PRIMARY_AI_PROVIDER", os.getenv("AI_PROVIDER", "gemini")).strip().lower()
 AI_PROVIDER_ORDER = os.getenv("AI_PROVIDER_ORDER")
 ORCHESTRATOR_RESULT_CATEGORY = "ORCHESTRATOR_RESULT"
+MASTER_STATE_DOCUMENT_NAME = "AI_OS_MASTER_STATE"
+MASTER_STATE_MAX_CHARS = int(os.getenv("MASTER_STATE_MAX_CHARS", "12000"))
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
 Si AI_OS Orchestrátor, riaditeľ digitálneho podniku Daniela Valušiaka.
 Komunikuj po slovensky. Buď stručný, praktický a vykonávací.
-Tvoj zdroj pravdy je Google Drive cez AI_OS Document Agent.
+Tvoj prvý zdroj pravdy je AI_OS_MASTER_STATE. Tvoj širší zdroj pravdy je Google Drive cez AI_OS Document Agent.
 Nikdy nevymýšľaj neoverené fakty. Ak nevieš, povedz čo chýba.
 Najprv použi dostupné dokumenty, potom navrhni ďalší konkrétny krok.
 Ak používateľ žiada výkon, vráť vykonateľný výsledok, nie teóriu.
@@ -1387,6 +1390,71 @@ def _provider_status() -> Dict[str, Any]:
     }
 
 
+def _load_master_state(max_chars: Optional[int] = None) -> Dict[str, Any]:
+    """Load AI_OS_MASTER_STATE as the first context source.
+
+    This is intentionally small and defensive:
+    - it never crashes /orchestrator/ask if the document is missing or temporarily unreadable,
+    - it reads the actual Google Doc text, not only the metadata index,
+    - it returns metadata for health checks and debugging.
+    """
+    safe_max_chars = max(1000, min(int(max_chars or MASTER_STATE_MAX_CHARS), 50000))
+    result: Dict[str, Any] = {
+        "name": MASTER_STATE_DOCUMENT_NAME,
+        "loaded": False,
+        "found": False,
+        "document_id": None,
+        "document_url": None,
+        "text": "",
+        "text_length": 0,
+        "truncated": False,
+        "error": None,
+    }
+
+    try:
+        drive_service = _drive()
+        doc = _find_optional_doc_by_name(drive_service, MASTER_STATE_DOCUMENT_NAME)
+        if not doc:
+            result["error"] = f"{MASTER_STATE_DOCUMENT_NAME} not found in AI_OS root folder."
+            return result
+
+        result["found"] = True
+        result["document_id"] = doc.get("id")
+        result["document_url"] = doc.get("webViewLink", "")
+
+        raw_text = _extract_text_from_doc(doc["id"]) if doc.get("id") else ""
+        raw_text = (raw_text or "").strip()
+        result["text_length"] = len(raw_text)
+
+        if len(raw_text) > safe_max_chars:
+            result["text"] = raw_text[:safe_max_chars].rstrip()
+            result["truncated"] = True
+        else:
+            result["text"] = raw_text
+
+        result["loaded"] = bool(result["text"])
+        return result
+    except Exception as exc:
+        result["error"] = _safe_error_text(exc)
+        return result
+
+
+def _master_state_status() -> Dict[str, Any]:
+    """Compact health information for AI_OS_MASTER_STATE."""
+    master_state = _load_master_state(max_chars=4000)
+    return {
+        "master_state_reader": "enabled",
+        "master_state_document_name": MASTER_STATE_DOCUMENT_NAME,
+        "master_state_found": master_state.get("found", False),
+        "master_state_loaded": master_state.get("loaded", False),
+        "master_state_document_id": master_state.get("document_id"),
+        "master_state_document_url": master_state.get("document_url"),
+        "master_state_text_length": master_state.get("text_length", 0),
+        "master_state_truncated": master_state.get("truncated", False),
+        "master_state_error": master_state.get("error"),
+    }
+
+
 def _orchestrator_compact_matches(search_result: Dict[str, Any], max_items: int = 5) -> List[Dict[str, Any]]:
     items = []
     for match in (search_result or {}).get("matches", [])[:max_items]:
@@ -1402,10 +1470,16 @@ def _orchestrator_compact_matches(search_result: Dict[str, Any], max_items: int 
 
 def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
     safe_limit = max(1, min(int(limit or 5), 10))
+
+    # Always load AI_OS_MASTER_STATE first. It is the compact current state of the project
+    # and should guide every answer before broader search results are considered.
+    master_state = _load_master_state()
+
     search_result = _search_ai_os(query=message, limit=safe_limit)
     matches = _orchestrator_compact_matches(search_result, safe_limit)
     return {
         "query": message,
+        "master_state": master_state,
         "search_found": search_result.get("found"),
         "match_count": search_result.get("match_count", 0),
         "matches": matches,
@@ -1417,6 +1491,23 @@ def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
 def _orchestrator_context_text(context: Dict[str, Any]) -> str:
     lines = []
     lines.append(f"Dotaz: {context.get('query')}")
+
+    master_state = context.get("master_state") or {}
+    lines.append("\n=== AI_OS_MASTER_STATE — prvý zdroj pravdy ===")
+    if master_state.get("loaded"):
+        lines.append(f"Dokument: {master_state.get('name')}")
+        if master_state.get("document_url"):
+            lines.append(f"URL: {master_state.get('document_url')}")
+        if master_state.get("truncated"):
+            lines.append("Poznámka: AI_OS_MASTER_STATE bol skrátený pre bezpečný kontext.")
+        lines.append(master_state.get("text", ""))
+    else:
+        lines.append(
+            "AI_OS_MASTER_STATE sa nepodarilo načítať. "
+            f"Chyba: {master_state.get('error') or 'neznáma chyba'}"
+        )
+
+    lines.append("\n=== Ďalšie nájdené dokumenty ===")
     lines.append(f"Nájdené dokumenty: {context.get('match_count', 0)}")
     for i, item in enumerate(context.get("matches", []), start=1):
         lines.append(f"\n[{i}] {item.get('title')}")
@@ -1679,11 +1770,13 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
 def orchestrator_health_get(request: Request):
     _check_token(request)
     status = _provider_status()
+    master_state_status = _master_state_status()
     return {
         "status": "ok",
         "service": APP_NAME,
         "orchestrator": "enabled",
         **status,
+        **master_state_status,
         # Backward compatibility with earlier health checks:
         "openai_configured": status["openai_configured"],
         "model": status["openai_model"],
