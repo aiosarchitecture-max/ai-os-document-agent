@@ -15,7 +15,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_2_2_MASTER_STATE_READER"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_1_DOCUMENT_READER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -40,7 +40,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.2.2",
+    version="1.3.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -916,7 +916,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.2.2 is online. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS_MASTER_STATE, AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
+        "message": "AI_OS Orchestrator v1.3.1 is online. Document Reader endpoint is enabled. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled.",
     }
 
 
@@ -1297,6 +1297,16 @@ def index_status_get(request: Request):
     }
 
 
+@app.get("/orchestrator/read-document")
+def orchestrator_read_document_get(
+    request: Request,
+    name: str,
+    max_chars: int = 3000,
+):
+    _check_token(request)
+    return _read_google_doc_by_name(name=name, max_chars=max_chars)
+
+
 @app.get("/search")
 def search_get(request: Request, query: str, limit: int = 10):
     _check_token(request)
@@ -1437,6 +1447,50 @@ def _load_master_state(max_chars: Optional[int] = None) -> Dict[str, Any]:
     except Exception as exc:
         result["error"] = _safe_error_text(exc)
         return result
+
+
+def _read_google_doc_by_name(name: str, max_chars: int = 3000) -> Dict[str, Any]:
+    """Read one Google Docs document by exact name and return a safe text preview."""
+    requested_name = (name or "").strip()
+    if not requested_name:
+        raise HTTPException(status_code=400, detail="Parameter name is required.")
+
+    safe_max_chars = max(100, min(int(max_chars or 3000), 50000))
+
+    try:
+        drive_service = _drive()
+        doc = _find_optional_doc_by_name(drive_service, requested_name)
+        if not doc:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Google document not found in AI_OS root folder: {requested_name}",
+            )
+
+        raw_text = _extract_text_from_doc(doc["id"]) if doc.get("id") else ""
+        raw_text = (raw_text or "").strip()
+        text_preview = raw_text[:safe_max_chars].rstrip()
+        return {
+            "status": "success",
+            "service": APP_NAME,
+            "action": "READ_DOCUMENT",
+            "document_name": doc.get("name") or requested_name,
+            "document_id": doc.get("id"),
+            "document_url": doc.get("webViewLink", ""),
+            "text_length": len(raw_text),
+            "returned_chars": len(text_preview),
+            "max_chars": safe_max_chars,
+            "truncated": len(raw_text) > safe_max_chars,
+            "text_preview": text_preview,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except HTTPException:
+        raise
+    except HttpError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=_safe_error_text(exc))
 
 
 def _master_state_status() -> Dict[str, Any]:
