@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import unicodedata
 import httpx
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
@@ -15,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_1_DOCUMENT_READER"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_2_WORKING_CONTEXT"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -40,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.1",
+    version="1.3.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -916,7 +917,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.1 is online. Document Reader endpoint is enabled. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled.",
+        "message": "AI_OS Orchestrator v1.2.2 is online. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS_MASTER_STATE, AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
     }
 
 
@@ -1297,14 +1298,32 @@ def index_status_get(request: Request):
     }
 
 
-@app.get("/orchestrator/read-document")
-def orchestrator_read_document_get(
+@app.get("/orchestrator/extract-snippets")
+def orchestrator_extract_snippets_get(
     request: Request,
     name: str,
-    max_chars: int = 3000,
+    query: str,
+    max_snippets: int = 5,
+    max_chars_per_snippet: int = 800,
+    include_scores: bool = False,
 ):
     _check_token(request)
-    return _read_google_doc_by_name(name=name, max_chars=max_chars)
+    working_context = _build_working_context(
+        query=query,
+        document_name=name,
+        max_snippets=max_snippets,
+        max_chars_per_snippet=max_chars_per_snippet,
+        include_scores=include_scores,
+    )
+    return {
+        "status": "success",
+        "service": APP_NAME,
+        "action": "EXTRACT_SNIPPETS",
+        "working_context": working_context,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
 
 
 @app.get("/search")
@@ -1449,48 +1468,250 @@ def _load_master_state(max_chars: Optional[int] = None) -> Dict[str, Any]:
         return result
 
 
-def _read_google_doc_by_name(name: str, max_chars: int = 3000) -> Dict[str, Any]:
-    """Read one Google Docs document by exact name and return a safe text preview."""
-    requested_name = (name or "").strip()
+WORKING_CONTEXT_PIPELINE_VERSION = "1.3.2-deterministic-v1"
+SLOVAK_STOPWORDS = {
+    "a", "aj", "ale", "alebo", "ako", "ak", "aby", "bez", "bol", "bola", "bolo", "boli",
+    "cez", "co", "čo", "do", "ho", "ich", "je", "ju", "k", "ku", "ma", "má", "me", "mi",
+    "mna", "mňa", "na", "nad", "nam", "nám", "nas", "nás", "ne", "nie", "no", "o", "od",
+    "po", "pod", "pre", "pri", "sa", "si", "sme", "som", "su", "sú", "ta", "tá", "tak",
+    "tam", "te", "ten", "to", "tu", "toto", "ty", "v", "vo", "za", "ze", "že", "z",
+    "projekt", "dokument", "dokumenty", "najdi", "nájdi", "ukaz", "ukáž", "povedz",
+}
+
+
+def _clean_text(text: str) -> str:
+    """Basic whitespace cleanup for Google Docs text."""
+    value = (text or "").replace("\r\n", "\n").replace("\r", "\n")
+    lines = [line.strip() for line in value.split("\n")]
+    cleaned_lines = []
+    empty_seen = False
+    for line in lines:
+        if not line:
+            if not empty_seen:
+                cleaned_lines.append("")
+            empty_seen = True
+        else:
+            cleaned_lines.append(line)
+            empty_seen = False
+    return "\n".join(cleaned_lines).strip()
+
+
+def _normalize_text(value: str) -> str:
+    """Lowercase, remove diacritics and punctuation-like characters."""
+    value = (value or "").lower()
+    value = "".join(
+        ch for ch in unicodedata.normalize("NFKD", value)
+        if not unicodedata.combining(ch)
+    )
+    value = re.sub(r"[^a-z0-9_\s-]", " ", value)
+    value = re.sub(r"\s+", " ", value).strip()
+    return value
+
+
+def _extract_keywords(query: str, max_keywords: int = 12) -> List[str]:
+    """Extract simple deterministic keywords from user query."""
+    normalized = _normalize_text(query)
+    raw_words = re.findall(r"[a-z0-9_]{3,}", normalized)
+    keywords: List[str] = []
+    for word in raw_words:
+        if word in SLOVAK_STOPWORDS:
+            continue
+        if word not in keywords:
+            keywords.append(word)
+        if len(keywords) >= max_keywords:
+            break
+    return keywords
+
+
+def _split_into_blocks(text: str, max_chars_per_block: int = 900) -> List[Dict[str, Any]]:
+    """Split document text into paragraph-like blocks with positions."""
+    cleaned = _clean_text(text)
+    if not cleaned:
+        return []
+
+    raw_parts = re.split(r"\n\s*\n|(?<=\n)(?=[A-ZÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽ0-9][^\n]{0,120}\n)", cleaned)
+    blocks: List[Dict[str, Any]] = []
+    cursor = 0
+
+    for raw in raw_parts:
+        part = raw.strip()
+        if not part:
+            continue
+
+        chunks = []
+        if len(part) <= max_chars_per_block:
+            chunks = [part]
+        else:
+            sentences = re.split(r"(?<=[.!?])\s+", part)
+            current = ""
+            for sentence in sentences:
+                if len(current) + len(sentence) + 1 <= max_chars_per_block:
+                    current = (current + " " + sentence).strip()
+                else:
+                    if current:
+                        chunks.append(current)
+                    current = sentence.strip()
+            if current:
+                chunks.append(current)
+
+        for chunk in chunks:
+            start = cleaned.find(chunk, cursor)
+            if start < 0:
+                start = cursor
+            end = start + len(chunk)
+            normalized = _normalize_text(chunk)
+            blocks.append({
+                "id": len(blocks) + 1,
+                "start": start,
+                "end": end,
+                "text": chunk,
+                "normalized_text": normalized,
+                "matched_keywords": [],
+                "score": 0.0,
+            })
+            cursor = end
+
+    return blocks
+
+
+def _keyword_variants(keyword: str) -> List[str]:
+    """Very small Slovak-friendly deterministic variants without heavy NLP."""
+    keyword = _normalize_text(keyword)
+    variants = {keyword}
+    suffixes = ["u", "a", "om", "och", "mi", "y", "e", "ov", "ove", "ovy", "neho", "nom"]
+    for suffix in suffixes:
+        if keyword.endswith(suffix) and len(keyword) > len(suffix) + 3:
+            variants.add(keyword[: -len(suffix)])
+    if len(keyword) >= 5:
+        variants.add(keyword[:5])
+    return [v for v in variants if len(v) >= 3]
+
+
+def _score_block(block: Dict[str, Any], keywords: List[str]) -> Dict[str, Any]:
+    """Score one block by deterministic keyword overlap."""
+    normalized = block.get("normalized_text", "")
+    matched: List[str] = []
+    score = 0.0
+    original_text = block.get("text", "")
+    is_heading_like = len(original_text) <= 160 and (
+        original_text.isupper()
+        or original_text.endswith(":")
+        or original_text.strip().startswith("#")
+    )
+
+    for keyword in keywords:
+        variants = _keyword_variants(keyword)
+        matched_this = False
+        for variant in variants:
+            if re.search(rf"\b{re.escape(variant)}[a-z0-9_]*\b", normalized):
+                matched_this = True
+                break
+        if matched_this:
+            matched.append(keyword)
+            score += 1.0
+
+    if matched:
+        score += min(len(set(matched)) * 0.25, 1.5)
+    if is_heading_like and matched:
+        score += 1.0
+    if matched and len(normalized) < 700:
+        score += 0.25
+
+    updated = dict(block)
+    updated["matched_keywords"] = sorted(set(matched))
+    updated["score"] = round(score, 4)
+    return updated
+
+
+def _select_best_blocks(
+    blocks: List[Dict[str, Any]],
+    keywords: List[str],
+    max_snippets: int = 5,
+    max_chars_per_snippet: int = 800,
+) -> List[Dict[str, Any]]:
+    """Score and select best text blocks."""
+    safe_max_snippets = max(1, min(int(max_snippets or 5), 20))
+    safe_max_chars = max(100, min(int(max_chars_per_snippet or 800), 3000))
+
+    scored = [_score_block(block, keywords) for block in blocks]
+    selected = [block for block in scored if block.get("score", 0) > 0]
+    if not selected:
+        selected = scored[:safe_max_snippets]
+
+    selected = sorted(selected, key=lambda b: (-float(b.get("score", 0)), int(b.get("id", 0))))
+    selected = selected[:safe_max_snippets]
+
+    compact: List[Dict[str, Any]] = []
+    for rank, block in enumerate(selected, start=1):
+        text_value = (block.get("text") or "").strip()
+        if len(text_value) > safe_max_chars:
+            text_value = text_value[:safe_max_chars].rstrip() + "..."
+        compact.append({
+            "rank": rank,
+            "id": block.get("id"),
+            "start": block.get("start"),
+            "end": block.get("end"),
+            "text": text_value,
+            "normalized_text": block.get("normalized_text", ""),
+            "matched_keywords": block.get("matched_keywords", []),
+            "score": block.get("score", 0.0),
+        })
+    return compact
+
+
+def _build_working_context(
+    query: str,
+    document_name: str,
+    max_snippets: int = 5,
+    max_chars_per_snippet: int = 800,
+    include_scores: bool = False,
+) -> Dict[str, Any]:
+    """Build the first deterministic WorkingContext from one Google Docs document."""
+    requested_name = (document_name or "").strip()
     if not requested_name:
         raise HTTPException(status_code=400, detail="Parameter name is required.")
+    if not query or not query.strip():
+        raise HTTPException(status_code=400, detail="Parameter query is required.")
 
-    safe_max_chars = max(100, min(int(max_chars or 3000), 50000))
+    drive_service = _drive()
+    doc = _find_optional_doc_by_name(drive_service, requested_name)
+    if not doc:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Google document not found in AI_OS root folder: {requested_name}",
+        )
 
-    try:
-        drive_service = _drive()
-        doc = _find_optional_doc_by_name(drive_service, requested_name)
-        if not doc:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Google document not found in AI_OS root folder: {requested_name}",
-            )
+    raw_text = _extract_text_from_doc(doc["id"]) if doc.get("id") else ""
+    cleaned_text = _clean_text(raw_text)
+    keywords = _extract_keywords(query)
+    blocks = _split_into_blocks(cleaned_text)
+    selected_blocks = _select_best_blocks(
+        blocks=blocks,
+        keywords=keywords,
+        max_snippets=max_snippets,
+        max_chars_per_snippet=max_chars_per_snippet,
+    )
 
-        raw_text = _extract_text_from_doc(doc["id"]) if doc.get("id") else ""
-        raw_text = (raw_text or "").strip()
-        text_preview = raw_text[:safe_max_chars].rstrip()
-        return {
-            "status": "success",
-            "service": APP_NAME,
-            "action": "READ_DOCUMENT",
-            "document_name": doc.get("name") or requested_name,
-            "document_id": doc.get("id"),
-            "document_url": doc.get("webViewLink", ""),
-            "text_length": len(raw_text),
-            "returned_chars": len(text_preview),
-            "max_chars": safe_max_chars,
-            "truncated": len(raw_text) > safe_max_chars,
-            "text_preview": text_preview,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        }
-    except HTTPException:
-        raise
-    except HttpError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=_safe_error_text(exc))
+    if not include_scores:
+        for block in selected_blocks:
+            block.pop("normalized_text", None)
+            block.pop("score", None)
+            block.pop("matched_keywords", None)
+
+    return {
+        "query": query,
+        "document_name": doc.get("name") or requested_name,
+        "document_id": doc.get("id"),
+        "document_url": doc.get("webViewLink", ""),
+        "text_length": len(cleaned_text),
+        "keywords": keywords,
+        "blocks_count": len(blocks),
+        "selected_blocks": selected_blocks,
+        "created_utc": _now_iso(),
+        "pipeline_version": WORKING_CONTEXT_PIPELINE_VERSION,
+        "provider": None,
+        "ai_response": None,
+    }
 
 
 def _master_state_status() -> Dict[str, Any]:
