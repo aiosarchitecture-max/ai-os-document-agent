@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_3_AI_CONTEXT_BUILDER"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_CLEAN_OUTPUT_DEBUG_MODE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.3",
+    version="1.3.4",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -159,6 +159,7 @@ class OrchestratorRequest(BaseModel):
     result_title: Optional[str] = None
     project_id: Optional[str] = "AI_OS"
     limit: Optional[int] = 5
+    debug: Optional[bool] = False
 
 
 
@@ -917,7 +918,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.2.2 is online. Master State Reader, Auto-index fallback and Free-first AI Provider Router are enabled. It uses AI_OS_MASTER_STATE, AI_OS Knowledge Index, Document Registry, Gemini/OpenAI and deterministic fallback.",
+        "message": "AI_OS Orchestrator v1.3.4 is online. Clean Output + Debug Mode is enabled for /orchestrator/ask.",
     }
 
 
@@ -2093,23 +2094,35 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         )
         saved_document = _create_document(doc_payload)
 
+    if not payload.debug:
+        response = {
+            "status": "success",
+            "answer": answer,
+        }
+        if saved_document is not None:
+            response["saved_document"] = saved_document
+        return response
+
     return {
         "status": "success",
-        "service": APP_NAME,
-        "action": "ORCHESTRATE",
-        "message": message,
-        "reasoning_engine": reasoning_engine,
-        "reasoning_model": reasoning_model,
-        "provider_attempts": provider_attempts,
-        "working_context_used": context.get("working_context_used", False),
-        "working_context": context.get("working_context"),
-        "working_context_error": context.get("working_context_error"),
         "answer": answer,
-        "context": context,
-        "saved_document": saved_document,
-        "time_utc": _now_iso(),
-        "time_local": _now_local_iso(),
-        "timezone": AI_OS_TIMEZONE_NAME,
+        "debug": {
+            "version": "1.3.4",
+            "service": APP_NAME,
+            "action": "ORCHESTRATE",
+            "message": message,
+            "reasoning_engine": reasoning_engine,
+            "reasoning_model": reasoning_model,
+            "provider_attempts": provider_attempts,
+            "working_context_used": context.get("working_context_used", False),
+            "working_context": context.get("working_context"),
+            "working_context_error": context.get("working_context_error"),
+            "context": context,
+            "saved_document": saved_document,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        },
     }
 
 
@@ -2141,6 +2154,7 @@ async def orchestrator_ask_get(
     result_title: Optional[str] = None,
     project_id: str = "AI_OS",
     limit: int = 5,
+    debug: bool = False,
 ):
     _check_token(request)
     return await _orchestrate(OrchestratorRequest(
@@ -2149,6 +2163,7 @@ async def orchestrator_ask_get(
         result_title=result_title,
         project_id=project_id,
         limit=limit,
+        debug=debug,
     ))
 
 
