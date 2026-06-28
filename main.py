@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_2_WORKING_CONTEXT"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_2_1_WORKING_CONTEXT_STABLE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.2",
+    version="1.3.2.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -1468,7 +1468,7 @@ def _load_master_state(max_chars: Optional[int] = None) -> Dict[str, Any]:
         return result
 
 
-WORKING_CONTEXT_PIPELINE_VERSION = "1.3.2-deterministic-v1"
+WORKING_CONTEXT_PIPELINE_VERSION = "1.3.2.1-deterministic-v1"
 SLOVAK_STOPWORDS = {
     "a", "aj", "ale", "alebo", "ako", "ak", "aby", "bez", "bol", "bola", "bolo", "boli",
     "cez", "co", "čo", "do", "ho", "ich", "je", "ju", "k", "ku", "ma", "má", "me", "mi",
@@ -1642,12 +1642,11 @@ def _select_best_blocks(
     selected = selected[:safe_max_snippets]
 
     compact: List[Dict[str, Any]] = []
-    for rank, block in enumerate(selected, start=1):
+    for _rank, block in enumerate(selected, start=1):
         text_value = (block.get("text") or "").strip()
         if len(text_value) > safe_max_chars:
             text_value = text_value[:safe_max_chars].rstrip() + "..."
         compact.append({
-            "rank": rank,
             "id": block.get("id"),
             "start": block.get("start"),
             "end": block.get("end"),
