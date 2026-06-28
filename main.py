@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_2_1_WORKING_CONTEXT_STABLE"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_3_AI_CONTEXT_BUILDER"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.2.1",
+    version="1.3.3",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -1742,6 +1742,55 @@ def _orchestrator_compact_matches(search_result: Dict[str, Any], max_items: int 
     return items
 
 
+def _choose_working_context_document(message: str, matches: List[Dict[str, Any]]) -> str:
+    """Choose the best document for WorkingContext without adding new architecture.
+
+    Prefer AI_OS_MASTER_STATE for project-state questions. Otherwise use the first
+    matched document. This keeps /orchestrator/ask simple and testable in v1.3.3.
+    """
+    normalized_message = _normalize_text(message)
+    state_terms = [
+        "aktualny", "stav", "dalej", "dalsi", "krok", "hotove", "nefunguje",
+        "priorita", "riziko", "rozhodnutie", "roadmapa", "plan",
+    ]
+    if any(term in normalized_message for term in state_terms):
+        return MASTER_STATE_DOCUMENT_NAME
+
+    for item in matches or []:
+        title = item.get("title") or item.get("document_name") or ""
+        if title:
+            return title
+
+    return MASTER_STATE_DOCUMENT_NAME
+
+
+def _working_context_text(working_context: Optional[Dict[str, Any]]) -> str:
+    """Render WorkingContext selected blocks into compact text for Gemini/OpenAI."""
+    if not working_context:
+        return "Pracovný kontext (WorkingContext) nie je dostupný."
+
+    lines = []
+    lines.append("=== PRACOVNÝ KONTEXT (WorkingContext) ===")
+    lines.append(f"Dokument: {working_context.get('document_name')}")
+    if working_context.get("document_url"):
+        lines.append(f"URL: {working_context.get('document_url')}")
+    lines.append(f"Kľúčové slová: {', '.join(working_context.get('keywords') or [])}")
+    lines.append(f"Počet blokov dokumentu: {working_context.get('blocks_count')}")
+    lines.append(f"Pipeline verzia: {working_context.get('pipeline_version')}")
+    lines.append("\nVybrané relevantné úryvky:")
+    selected_blocks = working_context.get("selected_blocks") or []
+    if not selected_blocks:
+        lines.append("Žiadne úryvky neboli vybrané.")
+    for i, block in enumerate(selected_blocks, start=1):
+        lines.append(f"\n[{i}] Blok ID: {block.get('id')}")
+        if block.get("matched_keywords"):
+            lines.append(f"Zhoda slov: {', '.join(block.get('matched_keywords') or [])}")
+        if block.get("score") is not None:
+            lines.append(f"Skóre: {block.get('score')}")
+        lines.append(block.get("text") or "")
+    return "\n".join(lines)
+
+
 def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
     safe_limit = max(1, min(int(limit or 5), 10))
 
@@ -1751,12 +1800,30 @@ def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
 
     search_result = _search_ai_os(query=message, limit=safe_limit)
     matches = _orchestrator_compact_matches(search_result, safe_limit)
+
+    working_context = None
+    working_context_error = None
+    try:
+        selected_document_name = _choose_working_context_document(message, matches)
+        working_context = _build_working_context(
+            query=message,
+            document_name=selected_document_name,
+            max_snippets=5,
+            max_chars_per_snippet=1200,
+            include_scores=True,
+        )
+    except Exception as exc:
+        working_context_error = _safe_error_text(exc)
+
     return {
         "query": message,
         "master_state": master_state,
         "search_found": search_result.get("found"),
         "match_count": search_result.get("match_count", 0),
         "matches": matches,
+        "working_context_used": working_context is not None,
+        "working_context": working_context,
+        "working_context_error": working_context_error,
         "index_status": search_result.get("index_status"),
         "requires_refresh_index": search_result.get("requires_refresh_index", False),
     }
@@ -1780,6 +1847,9 @@ def _orchestrator_context_text(context: Dict[str, Any]) -> str:
             "AI_OS_MASTER_STATE sa nepodarilo načítať. "
             f"Chyba: {master_state.get('error') or 'neznáma chyba'}"
         )
+
+    lines.append("\n")
+    lines.append(_working_context_text(context.get("working_context")))
 
     lines.append("\n=== Ďalšie nájdené dokumenty ===")
     lines.append(f"Nájdené dokumenty: {context.get('match_count', 0)}")
@@ -2031,6 +2101,9 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "reasoning_engine": reasoning_engine,
         "reasoning_model": reasoning_model,
         "provider_attempts": provider_attempts,
+        "working_context_used": context.get("working_context_used", False),
+        "working_context": context.get("working_context"),
+        "working_context_error": context.get("working_context_error"),
         "answer": answer,
         "context": context,
         "saved_document": saved_document,
