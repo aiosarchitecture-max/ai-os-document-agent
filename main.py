@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_2_STRICT_CLEAN_OUTPUT"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_KNOWLEDGE_RETRIEVAL"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.4.2",
+    version="1.3.5",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -320,10 +320,21 @@ def _find_file_by_name(drive_service, name: str, mime_type: str) -> dict:
 
 
 def _find_optional_doc_by_name(drive_service, name: str) -> Optional[dict]:
+    """Find a Google Docs document by exact name inside the AI_OS tree.
+
+    v1.3.5 compatibility note:
+    Earlier versions searched only the AI_OS root folder. Governance documents
+    are now often stored inside AI_OS_Governing_Documents, therefore this helper
+    first checks the root for backward compatibility and then falls back to the
+    recursive AI_OS document index.
+    """
     root_id = _root_folder_id()
+    safe_name = _safe_query_string(name)
+
+    # 1) Backward-compatible root lookup.
     q = (
         f"'{_safe_query_string(root_id)}' in parents and "
-        f"name='{_safe_query_string(name)}' and "
+        f"name='{safe_name}' and "
         "mimeType='application/vnd.google-apps.document' and "
         "trashed=false"
     )
@@ -335,7 +346,45 @@ def _find_optional_doc_by_name(drive_service, name: str) -> Optional[dict]:
         includeItemsFromAllDrives=True,
     ).execute()
     files = result.get("files", [])
-    return files[0] if files else None
+    if files:
+        return files[0]
+
+    # 2) Recursive lookup inside the AI_OS tree.
+    target = (name or "").strip()
+    if not target:
+        return None
+    try:
+        for item in _list_ai_os_google_docs_recursive(drive_service, max_documents=800):
+            if (item.get("name") or "").strip() == target:
+                return item
+    except Exception:
+        # Final fallback below still allows Drive search to work if recursive scan fails.
+        pass
+
+    # 3) Broad Drive lookup, then constrain to AI_OS tree by ID when possible.
+    try:
+        q = (
+            f"name='{safe_name}' and "
+            "mimeType='application/vnd.google-apps.document' and "
+            "trashed=false"
+        )
+        result = drive_service.files().list(
+            q=q,
+            fields="files(id,name,mimeType,webViewLink,parents)",
+            pageSize=10,
+            supportsAllDrives=True,
+            includeItemsFromAllDrives=True,
+        ).execute()
+        files = result.get("files", [])
+        if not files:
+            return None
+        indexed_ids = {d.get("id") for d in _list_ai_os_google_docs_recursive(drive_service, max_documents=800)}
+        for item in files:
+            if item.get("id") in indexed_ids:
+                return item
+        return files[0]
+    except Exception:
+        return None
 
 
 def _list_children(drive_service, folder_id: str, mime_type: Optional[str] = None) -> List[dict]:
@@ -918,7 +967,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.4.2 is online. Strict Clean Output is enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.3.5 is online. Knowledge Retrieval is enabled for /orchestrator/ask.",
     }
 
 
@@ -1327,6 +1376,44 @@ def orchestrator_extract_snippets_get(
     }
 
 
+@app.get("/orchestrator/knowledge-retrieval")
+def orchestrator_knowledge_retrieval_get(
+    request: Request,
+    message: str,
+    limit: int = 5,
+):
+    """Diagnostic endpoint for AI_OS v1.3.5 Knowledge Retrieval.
+
+    This endpoint does not call Gemini/OpenAI. It only shows which documents and
+    snippets would be used to build the unified WorkingContext.
+    """
+    _check_token(request)
+    if not message or not message.strip():
+        raise HTTPException(status_code=400, detail="message is required.")
+    try:
+        retrieval = _build_knowledge_retrieval_context(message=message.strip(), limit=limit)
+        return {
+            "status": "success",
+            "service": APP_NAME,
+            "action": "KNOWLEDGE_RETRIEVAL",
+            "knowledge_retrieval": retrieval,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+    except Exception as exc:
+        return {
+            "status": "error",
+            "service": APP_NAME,
+            "action": "KNOWLEDGE_RETRIEVAL",
+            "error": _safe_error_text(exc),
+            "fallback_available": True,
+            "time_utc": _now_iso(),
+            "time_local": _now_local_iso(),
+            "timezone": AI_OS_TIMEZONE_NAME,
+        }
+
+
 @app.get("/search")
 def search_get(request: Request, query: str, limit: int = 10):
     _check_token(request)
@@ -1367,6 +1454,27 @@ AI_PROVIDER_ORDER = os.getenv("AI_PROVIDER_ORDER")
 ORCHESTRATOR_RESULT_CATEGORY = "ORCHESTRATOR_RESULT"
 MASTER_STATE_DOCUMENT_NAME = "AI_OS_MASTER_STATE"
 MASTER_STATE_MAX_CHARS = int(os.getenv("MASTER_STATE_MAX_CHARS", "12000"))
+
+# AI_OS v1.3.5 – Knowledge Retrieval configuration.
+ENABLE_KNOWLEDGE_RETRIEVAL = os.getenv("ENABLE_KNOWLEDGE_RETRIEVAL", "true").strip().lower() not in {"0", "false", "no", "off"}
+KNOWLEDGE_RETRIEVAL_LIMIT = int(os.getenv("KNOWLEDGE_RETRIEVAL_LIMIT", "5"))
+SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "3"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
+MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "900"))
+MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
+KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5-knowledge-retrieval-v1"
+
+GOVERNANCE_DOCUMENT_CANDIDATES = [
+    "AI_OS_MASTER_STATE_v1.0",
+    "AI_OS_MASTER_STATE",
+    "AI_OS_ARCHITECTURE_v1.0",
+    "AI_OS_ROADMAP_v1.0",
+    "AI_OS_DECISIONS_v1.0",
+    "AI_OS_KNOWLEDGE_POLICY_v1.0",
+    "AI_OS_DOCUMENTATION_STANDARD_v1.0",
+    "AI_OS_GLOSSARY",
+    "AI_OS_NOTES",
+]
 
 ORCHESTRATOR_SYSTEM_PROMPT = """
 Si AI_OS Orchestrátor, riaditeľ digitálneho podniku Daniela Valušiaka.
@@ -1792,13 +1900,264 @@ def _working_context_text(working_context: Optional[Dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
+def _safe_int(value: Any, default: int, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def _safe_float(value: Any, default: float, minimum: float, maximum: float) -> float:
+    try:
+        parsed = float(value)
+    except Exception:
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def _retrieval_config() -> Dict[str, Any]:
+    """Runtime configuration for AI_OS v1.3.5 Knowledge Retrieval."""
+    return {
+        "enabled": ENABLE_KNOWLEDGE_RETRIEVAL,
+        "knowledge_retrieval_limit": _safe_int(KNOWLEDGE_RETRIEVAL_LIMIT, 5, 1, 12),
+        "snippets_per_document": _safe_int(SNIPPETS_PER_DOCUMENT, 3, 1, 8),
+        "max_context_chars": _safe_int(MAX_CONTEXT_CHARS, 12000, 3000, 50000),
+        "max_chars_per_snippet": _safe_int(MAX_CHARS_PER_RETRIEVAL_SNIPPET, 900, 200, 3000),
+        "min_relevance_score": _safe_float(MIN_RELEVANCE_SCORE, 0.25, 0.0, 100.0),
+        "pipeline_version": KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION,
+    }
+
+
+def _document_title_from_match(item: Dict[str, Any]) -> str:
+    return (item.get("title") or item.get("document_name") or item.get("name") or "").strip()
+
+
+def _document_identity_from_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "title": doc.get("name") or doc.get("document_name") or doc.get("title") or "",
+        "document_id": doc.get("id") or doc.get("document_id"),
+        "document_url": doc.get("webViewLink") or doc.get("document_url") or doc.get("url") or "",
+    }
+
+
+def _unique_document_candidates(message: str, search_matches: List[Dict[str, Any]], limit: int) -> List[Dict[str, Any]]:
+    """Build a deterministic candidate list for v1.3.5 retrieval.
+
+    The list combines:
+    - AI_OS_MASTER_STATE first,
+    - search matches from the index/fullText search,
+    - known Governance documents.
+    """
+    safe_limit = max(1, min(int(limit or 5), 12))
+    drive_service = _drive()
+    candidates: List[Dict[str, Any]] = []
+    seen: set = set()
+
+    def add_candidate(raw: Dict[str, Any], source: str) -> None:
+        title = _document_title_from_match(raw)
+        doc_id = raw.get("document_id") or raw.get("id")
+        key = doc_id or title
+        if not key or key in seen:
+            return
+        seen.add(key)
+        candidates.append({
+            "title": title,
+            "document_id": doc_id,
+            "document_url": raw.get("document_url") or raw.get("url") or raw.get("webViewLink") or "",
+            "source": source,
+            "match_score": raw.get("score"),
+            "match_type": raw.get("match_type"),
+            "snippet": raw.get("snippet", ""),
+        })
+
+    # Master state is always first source of truth. Prefer v1.0 if it exists, otherwise legacy name.
+    for master_name in ["AI_OS_MASTER_STATE_v1.0", MASTER_STATE_DOCUMENT_NAME]:
+        try:
+            doc = _find_optional_doc_by_name(drive_service, master_name)
+            if doc:
+                identity = _document_identity_from_doc(doc)
+                add_candidate({**identity, "score": 9999, "match_type": "master_state"}, "master_state")
+                break
+        except Exception:
+            continue
+
+    for match in search_matches or []:
+        add_candidate(match, "search")
+
+    # Governance documents are highly relevant for AI_OS operation. Add them as fallback candidates.
+    for name in GOVERNANCE_DOCUMENT_CANDIDATES:
+        try:
+            doc = _find_optional_doc_by_name(drive_service, name)
+            if doc:
+                identity = _document_identity_from_doc(doc)
+                add_candidate({**identity, "score": 50, "match_type": "governance_candidate"}, "governance")
+        except Exception:
+            continue
+        if len(candidates) >= max(safe_limit * 3, safe_limit + 6):
+            break
+
+    return candidates
+
+
+def _score_working_context_document(candidate: Dict[str, Any], working_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Score a document using selected snippet scores and metadata.
+
+    This is deterministic and transparent for debug=true. It does not use AI.
+    """
+    selected_blocks = (working_context or {}).get("selected_blocks") or []
+    snippet_score = 0.0
+    matched_keywords = set()
+    for block in selected_blocks:
+        try:
+            snippet_score += float(block.get("score") or 0)
+        except Exception:
+            pass
+        for kw in block.get("matched_keywords") or []:
+            matched_keywords.add(kw)
+
+    source_bonus = 0.0
+    if candidate.get("source") == "master_state":
+        source_bonus = 10.0
+    elif candidate.get("source") == "search":
+        source_bonus = 3.0
+    elif candidate.get("source") == "governance":
+        source_bonus = 1.0
+
+    match_score = candidate.get("match_score") or 0
+    try:
+        match_score = float(match_score)
+    except Exception:
+        match_score = 0.0
+
+    total = snippet_score + source_bonus + min(match_score, 20.0) * 0.1 + len(matched_keywords) * 0.5
+    updated = dict(candidate)
+    updated["relevance_score"] = round(total, 4)
+    updated["snippet_score"] = round(snippet_score, 4)
+    updated["matched_keywords"] = sorted(matched_keywords)
+    return updated
+
+
+def _build_knowledge_retrieval_context(message: str, limit: int = 5) -> Dict[str, Any]:
+    """AI_OS v1.3.5 Knowledge Retrieval.
+
+    Creates one unified WorkingContext from multiple relevant documents.
+    Fallback behavior: if multi-document retrieval fails, caller can use legacy v1.3.4.2 context.
+    """
+    cfg = _retrieval_config()
+    safe_limit = max(1, min(int(limit or cfg["knowledge_retrieval_limit"]), cfg["knowledge_retrieval_limit"], 12))
+    snippets_per_document = cfg["snippets_per_document"]
+    max_chars_per_snippet = cfg["max_chars_per_snippet"]
+    max_context_chars = cfg["max_context_chars"]
+    min_relevance_score = cfg["min_relevance_score"]
+
+    search_result = _search_ai_os(query=message, limit=max(safe_limit * 3, safe_limit + 4))
+    matches = _orchestrator_compact_matches(search_result, max(safe_limit * 3, safe_limit + 4))
+    candidates = _unique_document_candidates(message, matches, safe_limit)
+
+    document_contexts: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+
+    for candidate in candidates:
+        title = candidate.get("title")
+        if not title:
+            continue
+        try:
+            wc = _build_working_context(
+                query=message,
+                document_name=title,
+                max_snippets=snippets_per_document,
+                max_chars_per_snippet=max_chars_per_snippet,
+                include_scores=True,
+            )
+            scored_candidate = _score_working_context_document(candidate, wc)
+            # Keep master state even with low score; apply threshold to other docs.
+            if scored_candidate.get("source") != "master_state" and scored_candidate.get("relevance_score", 0) < min_relevance_score:
+                continue
+            document_contexts.append({
+                **scored_candidate,
+                "working_context": wc,
+                "selected_blocks": wc.get("selected_blocks") or [],
+                "text_length": wc.get("text_length", 0),
+                "blocks_count": wc.get("blocks_count", 0),
+                "keywords": wc.get("keywords") or [],
+            })
+        except Exception as exc:
+            errors.append({"document": title, "error": _safe_error_text(exc)})
+
+    document_contexts = sorted(
+        document_contexts,
+        key=lambda item: (
+            0 if item.get("source") == "master_state" else 1,
+            -float(item.get("relevance_score") or 0),
+            item.get("title") or "",
+        ),
+    )[:safe_limit]
+
+    # Build unified selected snippets with a global char budget.
+    unified_blocks: List[Dict[str, Any]] = []
+    used_chars = 0
+    for doc_ctx in document_contexts:
+        for block in doc_ctx.get("selected_blocks") or []:
+            text = (block.get("text") or "").strip()
+            if not text:
+                continue
+            if used_chars >= max_context_chars:
+                break
+            remaining = max_context_chars - used_chars
+            clipped = text if len(text) <= remaining else text[:remaining].rstrip() + "..."
+            used_chars += len(clipped)
+            unified_blocks.append({
+                "document_name": doc_ctx.get("title"),
+                "document_id": doc_ctx.get("document_id"),
+                "document_url": doc_ctx.get("document_url"),
+                "block_id": block.get("id"),
+                "text": clipped,
+                "matched_keywords": block.get("matched_keywords") or [],
+                "score": block.get("score"),
+                "document_relevance_score": doc_ctx.get("relevance_score"),
+            })
+        if used_chars >= max_context_chars:
+            break
+
+    return {
+        "query": message,
+        "pipeline_version": cfg["pipeline_version"],
+        "retrieval_enabled": True,
+        "config": cfg,
+        "search_found": search_result.get("found"),
+        "index_status": search_result.get("index_status"),
+        "requires_refresh_index": search_result.get("requires_refresh_index", False),
+        "candidate_count": len(candidates),
+        "used_document_count": len(document_contexts),
+        "used_documents": [
+            {
+                "document_name": item.get("title"),
+                "document_id": item.get("document_id"),
+                "document_url": item.get("document_url"),
+                "source": item.get("source"),
+                "relevance_score": item.get("relevance_score"),
+                "matched_keywords": item.get("matched_keywords") or [],
+                "selected_snippet_count": len(item.get("selected_blocks") or []),
+                "text_length": item.get("text_length", 0),
+            }
+            for item in document_contexts
+        ],
+        "document_contexts": document_contexts,
+        "selected_blocks": unified_blocks,
+        "context_chars": used_chars,
+        "errors": errors,
+        "created_utc": _now_iso(),
+        "provider": None,
+        "ai_response": None,
+    }
+
+
+def _build_legacy_single_document_context(message: str, limit: int = 5) -> Dict[str, Any]:
+    """v1.3.4.2-compatible context builder used for rollback/fallback."""
     safe_limit = max(1, min(int(limit or 5), 10))
 
-    # Always load AI_OS_MASTER_STATE first. It is the compact current state of the project
-    # and should guide every answer before broader search results are considered.
     master_state = _load_master_state()
-
     search_result = _search_ai_os(query=message, limit=safe_limit)
     matches = _orchestrator_compact_matches(search_result, safe_limit)
 
@@ -1818,21 +2177,74 @@ def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
 
     return {
         "query": message,
+        "mode": "legacy_single_document",
         "master_state": master_state,
         "search_found": search_result.get("found"),
         "match_count": search_result.get("match_count", 0),
         "matches": matches,
         "working_context_used": working_context is not None,
         "working_context": working_context,
+        "knowledge_retrieval_used": False,
+        "knowledge_retrieval": None,
+        "knowledge_retrieval_error": None,
         "working_context_error": working_context_error,
         "index_status": search_result.get("index_status"),
         "requires_refresh_index": search_result.get("requires_refresh_index", False),
     }
 
 
+def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
+    """Build context for /orchestrator/ask.
+
+    v1.3.5 adds Knowledge Retrieval. If disabled or failing, it automatically
+    falls back to the stable v1.3.4.2 single-document WorkingContext.
+    """
+    if not ENABLE_KNOWLEDGE_RETRIEVAL:
+        context = _build_legacy_single_document_context(message=message, limit=limit)
+        context["knowledge_retrieval_error"] = "ENABLE_KNOWLEDGE_RETRIEVAL=false"
+        return context
+
+    try:
+        kr = _build_knowledge_retrieval_context(message=message, limit=limit)
+        master_state = _load_master_state()
+        return {
+            "query": message,
+            "mode": "knowledge_retrieval",
+            "master_state": master_state,
+            "search_found": kr.get("search_found"),
+            "match_count": kr.get("used_document_count", 0),
+            "matches": kr.get("used_documents", []),
+            "working_context_used": bool(kr.get("selected_blocks")),
+            "working_context": {
+                "query": message,
+                "document_name": "MULTI_DOCUMENT_WORKING_CONTEXT",
+                "document_id": None,
+                "document_url": None,
+                "text_length": kr.get("context_chars", 0),
+                "keywords": sorted({kw for doc in kr.get("used_documents", []) for kw in (doc.get("matched_keywords") or [])}),
+                "blocks_count": len(kr.get("selected_blocks") or []),
+                "selected_blocks": kr.get("selected_blocks") or [],
+                "created_utc": kr.get("created_utc"),
+                "pipeline_version": kr.get("pipeline_version"),
+                "provider": None,
+                "ai_response": None,
+            },
+            "knowledge_retrieval_used": True,
+            "knowledge_retrieval": kr,
+            "knowledge_retrieval_error": None,
+            "working_context_error": None,
+            "index_status": kr.get("index_status"),
+            "requires_refresh_index": kr.get("requires_refresh_index", False),
+        }
+    except Exception as exc:
+        context = _build_legacy_single_document_context(message=message, limit=limit)
+        context["knowledge_retrieval_error"] = _safe_error_text(exc)
+        return context
+
 def _orchestrator_context_text(context: Dict[str, Any]) -> str:
     lines = []
     lines.append(f"Dotaz: {context.get('query')}")
+    lines.append(f"Režim kontextu: {context.get('mode') or 'unknown'}")
 
     master_state = context.get("master_state") or {}
     lines.append("\n=== AI_OS_MASTER_STATE — prvý zdroj pravdy ===")
@@ -1849,21 +2261,55 @@ def _orchestrator_context_text(context: Dict[str, Any]) -> str:
             f"Chyba: {master_state.get('error') or 'neznáma chyba'}"
         )
 
-    lines.append("\n")
-    lines.append(_working_context_text(context.get("working_context")))
+    kr = context.get("knowledge_retrieval") or {}
+    if context.get("knowledge_retrieval_used") and kr:
+        lines.append("\n=== KNOWLEDGE RETRIEVAL (Vyhľadanie znalostí) ===")
+        lines.append(f"Pipeline: {kr.get('pipeline_version')}")
+        lines.append(f"Použité dokumenty: {kr.get('used_document_count', 0)}")
+        lines.append(f"Veľkosť zjednoteného kontextu: {kr.get('context_chars', 0)} znakov")
+        if kr.get("errors"):
+            lines.append(f"Chyby pri čítaní niektorých dokumentov: {len(kr.get('errors') or [])}")
 
-    lines.append("\n=== Ďalšie nájdené dokumenty ===")
-    lines.append(f"Nájdené dokumenty: {context.get('match_count', 0)}")
-    for i, item in enumerate(context.get("matches", []), start=1):
-        lines.append(f"\n[{i}] {item.get('title')}")
-        if item.get("url"):
-            lines.append(f"URL: {item.get('url')}")
-        if item.get("score") is not None:
-            lines.append(f"Skóre: {item.get('score')}")
-        if item.get("snippet"):
-            lines.append(f"Úryvok: {item.get('snippet')}")
+        lines.append("\nPoužité dokumenty:")
+        for i, doc in enumerate(kr.get("used_documents") or [], start=1):
+            lines.append(
+                f"{i}. {doc.get('document_name')} "
+                f"(score={doc.get('relevance_score')}, source={doc.get('source')})"
+            )
+            if doc.get("document_url"):
+                lines.append(f"   URL: {doc.get('document_url')}")
+            if doc.get("matched_keywords"):
+                lines.append(f"   Kľúčové slová: {', '.join(doc.get('matched_keywords') or [])}")
+
+        lines.append("\nVybrané úryvky:")
+        for i, block in enumerate(kr.get("selected_blocks") or [], start=1):
+            lines.append(f"\n[{i}] Dokument: {block.get('document_name')}")
+            if block.get("score") is not None:
+                lines.append(f"Skóre úryvku: {block.get('score')}; skóre dokumentu: {block.get('document_relevance_score')}")
+            if block.get("matched_keywords"):
+                lines.append(f"Zhoda slov: {', '.join(block.get('matched_keywords') or [])}")
+            lines.append(block.get("text") or "")
+    else:
+        lines.append("\n")
+        lines.append(_working_context_text(context.get("working_context")))
+
+        lines.append("\n=== Ďalšie nájdené dokumenty ===")
+        lines.append(f"Nájdené dokumenty: {context.get('match_count', 0)}")
+        for i, item in enumerate(context.get("matches", []), start=1):
+            lines.append(f"\n[{i}] {item.get('title') or item.get('document_name')}")
+            if item.get("url") or item.get("document_url"):
+                lines.append(f"URL: {item.get('url') or item.get('document_url')}")
+            if item.get("score") is not None:
+                lines.append(f"Skóre: {item.get('score')}")
+            if item.get("snippet"):
+                lines.append(f"Úryvok: {item.get('snippet')}")
+
+    if context.get("knowledge_retrieval_error"):
+        lines.append("\n=== Knowledge Retrieval fallback ===")
+        lines.append(f"Chyba: {context.get('knowledge_retrieval_error')}")
+        lines.append("Použitá stabilná fallback logika v1.3.4.2.")
+
     return "\n".join(lines)
-
 
 def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
     return (
@@ -2171,7 +2617,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "status": "success",
         "answer": user_answer,
         "debug": {
-            "version": "1.3.4.2",
+            "version": "1.3.5",
             "service": APP_NAME,
             "action": "ORCHESTRATE",
             "message": message,
@@ -2179,6 +2625,10 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
             "reasoning_model": reasoning_model,
             "provider_attempts": provider_attempts,
             "raw_answer": answer,
+            "context_mode": context.get("mode"),
+            "knowledge_retrieval_used": context.get("knowledge_retrieval_used", False),
+            "knowledge_retrieval": context.get("knowledge_retrieval"),
+            "knowledge_retrieval_error": context.get("knowledge_retrieval_error"),
             "working_context_used": context.get("working_context_used", False),
             "working_context": context.get("working_context"),
             "working_context_error": context.get("working_context_error"),
@@ -2205,6 +2655,7 @@ def orchestrator_health_get(request: Request):
         "openai_configured": status["openai_configured"],
         "model": status["openai_model"],
         "document_agent_internal": True,
+        "knowledge_retrieval": _retrieval_config(),
         "time_utc": _now_iso(),
         "time_local": _now_local_iso(),
     }
