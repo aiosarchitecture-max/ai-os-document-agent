@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_1_CLEAN_OUTPUT_FIX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_2_STRICT_CLEAN_OUTPUT"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.4.1",
+    version="1.3.4.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -918,7 +918,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.4.1 is online. Clean Output Fix is enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.3.4.2 is online. Strict Clean Output is enabled for /orchestrator/ask.",
     }
 
 
@@ -1871,7 +1871,10 @@ def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
         f"{message}\n\n"
         "Dostupný kontext z AI_OS dokumentov:\n"
         f"{_orchestrator_context_text(context)}\n\n"
-        "Vráť: 1) odpoveď, 2) použité dokumenty, 3) ďalší konkrétny krok."
+        "Odpovedz po slovensky ako čistý text pre používateľa. "
+        "Nevracaj JSON. Nevypisuj interné polia ako working_context, provider_attempts, "
+        "reasoning_engine, context, used_documents ani project_id. "
+        "Ak treba, uveď iba stručnú odpoveď a ďalší konkrétny krok."
     )
 
 
@@ -2048,10 +2051,11 @@ def _orchestrator_deterministic_answer(message: str, context: Dict[str, Any]) ->
 
 
 def _clean_answer_for_user(answer: Any) -> str:
-    """Return a clean user-facing answer.
+    """Return a strict clean user-facing answer.
 
-    If an AI provider returns a JSON string containing diagnostics, production
-    mode exposes only the nested answer value.
+    Production output must never expose diagnostic JSON. If the model returns
+    a JSON object as text, extract only its answer/odpoveď field. If no answer
+    field exists, return a short safe text instead of leaking internals.
     """
     if answer is None:
         return ""
@@ -2066,16 +2070,46 @@ def _clean_answer_for_user(answer: Any) -> str:
     if fenced:
         value = fenced.group(1).strip()
 
-    try:
-        parsed = json.loads(value)
+    def _extract_from_json_text(candidate: str) -> Optional[str]:
+        try:
+            parsed = json.loads(candidate)
+        except Exception:
+            return None
         if isinstance(parsed, dict):
             nested = parsed.get("answer") or parsed.get("odpoveď") or parsed.get("odpoved")
             if nested:
-                return str(nested).strip()
-    except Exception:
-        pass
+                nested_text = str(nested).strip()
+                # Recursively clean if answer itself is a JSON string.
+                if nested_text.startswith("{") or nested_text.startswith("```"):
+                    return _clean_answer_for_user(nested_text)
+                return nested_text
+        return None
+
+    direct = _extract_from_json_text(value)
+    if direct:
+        return direct
+
+    # If JSON is embedded inside surrounding text, try to extract it safely.
+    first = value.find("{")
+    last = value.rfind("}")
+    if first >= 0 and last > first:
+        embedded = _extract_from_json_text(value[first:last + 1])
+        if embedded:
+            return embedded
+
+    # Remove common diagnostic sections if model returned a semi-structured answer.
+    diagnostic_markers = [
+        "\nused_documents", "\nused documents", "\npoužité dokumenty", "\nproject_id",
+        "\nprovider_attempts", "\nworking_context", "\nreasoning_engine", "\ncontext:",
+    ]
+    lowered = value.lower()
+    cut_positions = [lowered.find(marker) for marker in diagnostic_markers if lowered.find(marker) >= 0]
+    if cut_positions:
+        value = value[:min(cut_positions)].strip()
 
     return value
+
+
 
 
 async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
@@ -2128,19 +2162,16 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
     user_answer = _clean_answer_for_user(answer)
 
     if not payload.debug:
-        response = {
+        return {
             "status": "success",
             "answer": user_answer,
         }
-        if saved_document is not None:
-            response["saved_document"] = saved_document
-        return response
 
     return {
         "status": "success",
         "answer": user_answer,
         "debug": {
-            "version": "1.3.4.1",
+            "version": "1.3.4.2",
             "service": APP_NAME,
             "action": "ORCHESTRATE",
             "message": message,
