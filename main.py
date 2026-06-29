@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_CLEAN_OUTPUT_DEBUG_MODE"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_4_1_CLEAN_OUTPUT_FIX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.4",
+    version="1.3.4.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -918,7 +918,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.4 is online. Clean Output + Debug Mode is enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.3.4.1 is online. Clean Output Fix is enabled for /orchestrator/ask.",
     }
 
 
@@ -2047,6 +2047,37 @@ def _orchestrator_deterministic_answer(message: str, context: Dict[str, Any]) ->
     return "\n".join(lines)
 
 
+def _clean_answer_for_user(answer: Any) -> str:
+    """Return a clean user-facing answer.
+
+    If an AI provider returns a JSON string containing diagnostics, production
+    mode exposes only the nested answer value.
+    """
+    if answer is None:
+        return ""
+    if not isinstance(answer, str):
+        return str(answer)
+
+    value = answer.strip()
+    if not value:
+        return ""
+
+    fenced = re.match(r"^```(?:json)?\s*(.*?)\s*```$", value, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        value = fenced.group(1).strip()
+
+    try:
+        parsed = json.loads(value)
+        if isinstance(parsed, dict):
+            nested = parsed.get("answer") or parsed.get("odpoveď") or parsed.get("odpoved")
+            if nested:
+                return str(nested).strip()
+    except Exception:
+        pass
+
+    return value
+
+
 async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
     if not payload.message or not payload.message.strip():
         raise HTTPException(status_code=400, detail="message is required.")
@@ -2094,10 +2125,12 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         )
         saved_document = _create_document(doc_payload)
 
+    user_answer = _clean_answer_for_user(answer)
+
     if not payload.debug:
         response = {
             "status": "success",
-            "answer": answer,
+            "answer": user_answer,
         }
         if saved_document is not None:
             response["saved_document"] = saved_document
@@ -2105,19 +2138,19 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
 
     return {
         "status": "success",
-        "answer": answer,
+        "answer": user_answer,
         "debug": {
-            "version": "1.3.4",
+            "version": "1.3.4.1",
             "service": APP_NAME,
             "action": "ORCHESTRATE",
             "message": message,
             "reasoning_engine": reasoning_engine,
             "reasoning_model": reasoning_model,
             "provider_attempts": provider_attempts,
+            "raw_answer": answer,
             "working_context_used": context.get("working_context_used", False),
             "working_context": context.get("working_context"),
             "working_context_error": context.get("working_context_error"),
-            "context": context,
             "saved_document": saved_document,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
