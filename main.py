@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_KNOWLEDGE_RETRIEVAL"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_1_KNOWLEDGE_RETRIEVAL_MEMORY_FIX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.5",
+    version="1.3.5.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -1453,16 +1453,17 @@ PRIMARY_AI_PROVIDER = os.getenv("PRIMARY_AI_PROVIDER", os.getenv("AI_PROVIDER", 
 AI_PROVIDER_ORDER = os.getenv("AI_PROVIDER_ORDER")
 ORCHESTRATOR_RESULT_CATEGORY = "ORCHESTRATOR_RESULT"
 MASTER_STATE_DOCUMENT_NAME = "AI_OS_MASTER_STATE"
-MASTER_STATE_MAX_CHARS = int(os.getenv("MASTER_STATE_MAX_CHARS", "12000"))
+MASTER_STATE_MAX_CHARS = int(os.getenv("MASTER_STATE_MAX_CHARS", "6000"))
 
 # AI_OS v1.3.5 – Knowledge Retrieval configuration.
 ENABLE_KNOWLEDGE_RETRIEVAL = os.getenv("ENABLE_KNOWLEDGE_RETRIEVAL", "true").strip().lower() not in {"0", "false", "no", "off"}
 KNOWLEDGE_RETRIEVAL_LIMIT = int(os.getenv("KNOWLEDGE_RETRIEVAL_LIMIT", "5"))
-SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "3"))
-MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "12000"))
-MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "900"))
+SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "2"))
+MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
+MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "700"))
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
-KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5-knowledge-retrieval-v1"
+KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.1-knowledge-retrieval-memory-safe"
+AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
 
 GOVERNANCE_DOCUMENT_CANDIDATES = [
     "AI_OS_MASTER_STATE_v1.0",
@@ -2311,17 +2312,54 @@ def _orchestrator_context_text(context: Dict[str, Any]) -> str:
 
     return "\n".join(lines)
 
+def _truncate_text(value: Any, max_chars: int) -> str:
+    text = "" if value is None else str(value)
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "\n\n[TRUNCATED_FOR_MEMORY_SAFETY]"
+
+
 def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
+    # v1.3.5.1: keep the AI prompt compact so Render Free 512 MB does not crash
+    # while calling Gemini/OpenAI. Knowledge Retrieval still runs; only the prompt
+    # sent to the AI model is bounded.
+    context_text = _truncate_text(_orchestrator_context_text(context), AI_PROMPT_MAX_CHARS)
     return (
         "Úloha od Daniela:\n"
         f"{message}\n\n"
         "Dostupný kontext z AI_OS dokumentov:\n"
-        f"{_orchestrator_context_text(context)}\n\n"
+        f"{context_text}\n\n"
         "Odpovedz po slovensky ako čistý text pre používateľa. "
         "Nevracaj JSON. Nevypisuj interné polia ako working_context, provider_attempts, "
         "reasoning_engine, context, used_documents ani project_id. "
         "Ak treba, uveď iba stručnú odpoveď a ďalší konkrétny krok."
     )
+
+
+def _compact_knowledge_retrieval_for_debug(kr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not kr:
+        return None
+    return {
+        "query": kr.get("query"),
+        "pipeline_version": kr.get("pipeline_version"),
+        "retrieval_enabled": kr.get("retrieval_enabled"),
+        "config": kr.get("config"),
+        "search_found": kr.get("search_found"),
+        "index_status": kr.get("index_status"),
+        "candidate_count": kr.get("candidate_count"),
+        "used_document_count": kr.get("used_document_count"),
+        "used_documents": kr.get("used_documents"),
+        "selected_blocks": [
+            {
+                **{k: v for k, v in block.items() if k != "text"},
+                "text_preview": _truncate_text(block.get("text"), 600),
+            }
+            for block in (kr.get("selected_blocks") or [])
+        ],
+        "context_chars": kr.get("context_chars"),
+        "errors": kr.get("errors"),
+        "created_utc": kr.get("created_utc"),
+    }
 
 
 def _safe_error_text(exc: Exception, limit: int = 800) -> str:
@@ -2617,7 +2655,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "status": "success",
         "answer": user_answer,
         "debug": {
-            "version": "1.3.5",
+            "version": "1.3.5.1",
             "service": APP_NAME,
             "action": "ORCHESTRATE",
             "message": message,
@@ -2627,10 +2665,10 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
             "raw_answer": answer,
             "context_mode": context.get("mode"),
             "knowledge_retrieval_used": context.get("knowledge_retrieval_used", False),
-            "knowledge_retrieval": context.get("knowledge_retrieval"),
+            "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(context.get("knowledge_retrieval")),
             "knowledge_retrieval_error": context.get("knowledge_retrieval_error"),
             "working_context_used": context.get("working_context_used", False),
-            "working_context": context.get("working_context"),
+            "working_context": {**(context.get("working_context") or {}), "selected_blocks": [{**{k: v for k, v in b.items() if k != "text"}, "text_preview": _truncate_text(b.get("text"), 600)} for b in ((context.get("working_context") or {}).get("selected_blocks") or [])]},
             "working_context_error": context.get("working_context_error"),
             "saved_document": saved_document,
             "time_utc": _now_iso(),
