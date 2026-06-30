@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_4_COMPACT_DEBUG_OUTPUT"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_6_ASSISTANT_COMMAND_MODE"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -160,6 +160,7 @@ class OrchestratorRequest(BaseModel):
     project_id: Optional[str] = "AI_OS"
     limit: Optional[int] = 5
     debug: Optional[bool] = False
+    assistant_mode: Optional[bool] = True
 
 
 
@@ -1551,6 +1552,9 @@ MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
 MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "700"))
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
 KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
+ASSISTANT_COMMAND_MODE_VERSION = "1.3.6-assistant-command-mode"
+ENABLE_ASSISTANT_COMMAND_MODE = os.getenv("ENABLE_ASSISTANT_COMMAND_MODE", "true").strip().lower() not in ("0", "false", "no", "off")
+ASSISTANT_MAX_ANSWER_CHARS = int(os.getenv("ASSISTANT_MAX_ANSWER_CHARS", "5000"))
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
 MAX_DEBUG_CHARS = int(os.getenv("MAX_DEBUG_CHARS", "3000"))
 DEBUG_TEXT_PREVIEW_CHARS = int(os.getenv("DEBUG_TEXT_PREVIEW_CHARS", "220"))
@@ -2427,20 +2431,85 @@ def _truncate_text(value: Any, max_chars: int) -> str:
     return text[:max_chars].rstrip() + "\n\n[TRUNCATED_FOR_MEMORY_SAFETY]"
 
 
+def _assistant_command_instruction() -> str:
+    return (
+        "Režim: AI_OS Assistant Command Mode. Odpovedaj ako Danielov výkonný pracovný asistent. "
+        "Tvoj cieľ nie je iba odpovedať, ale zmeniť požiadavku na praktický najbližší krok. "
+        "Použi presne túto krátku štruktúru:\n"
+        "1. Pochopenie zadania\n"
+        "2. Najbližší krok\n"
+        "3. Čo AI_OS pripraví\n"
+        "4. Čo má Daniel schváliť\n"
+        "5. Stav úlohy\n"
+        "Buď stručný. Nevymýšľaj uloženie ani vykonanie, ak sa reálne nestalo. "
+        "Ak je potrebné iba odpovedať, aj tak uveď najbližší praktický krok. "
+    )
+
+
 def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
-    # v1.3.5.1: keep the AI prompt compact so Render Free 512 MB does not crash
-    # while calling Gemini/OpenAI. Knowledge Retrieval still runs; only the prompt
-    # sent to the AI model is bounded.
+    # v1.3.6: Assistant Command Mode keeps the public API stable, but changes
+    # the default behavior from passive Q&A to executive-assistant output.
+    # The prompt remains bounded for Render Free memory safety.
     context_text = _truncate_text(_orchestrator_context_text(context), AI_PROMPT_MAX_CHARS)
+    assistant_mode = bool(context.get("assistant_mode_enabled"))
+    instruction = _assistant_command_instruction() if assistant_mode else (
+        "Odpovedz po slovensky ako čistý text pre používateľa. "
+        "Ak treba, uveď iba stručnú odpoveď a ďalší konkrétny krok. "
+    )
     return (
         "Úloha od Daniela:\n"
         f"{message}\n\n"
         "Dostupný kontext z AI_OS dokumentov:\n"
         f"{context_text}\n\n"
-        "Odpovedz po slovensky ako čistý text pre používateľa. "
+        f"{instruction}"
         "Nevracaj JSON. Nevypisuj interné polia ako working_context, provider_attempts, "
-        "reasoning_engine, context, used_documents ani project_id. "
-        "Ak treba, uveď iba stručnú odpoveď a ďalší konkrétny krok."
+        "reasoning_engine, context, used_documents ani project_id."
+    )
+
+
+def _has_assistant_command_shape(answer: str) -> bool:
+    text = (answer or "").lower()
+    required = [
+        "pochopenie zadania",
+        "najbližší krok",
+        "čo ai_os pripraví",
+        "čo má daniel schváliť",
+        "stav úlohy",
+    ]
+    return all(item in text for item in required)
+
+
+def _assistant_safe_line(value: Any, max_chars: int = 900) -> str:
+    text = _clean_answer_for_user(value).strip() if isinstance(value, str) else str(value or "").strip()
+    text = re.sub(r"\s+", " ", text)
+    return _truncate_text(text, max_chars)
+
+
+def _format_assistant_command_answer(message: str, answer: str, context: Dict[str, Any]) -> str:
+    cleaned = _clean_answer_for_user(answer)
+    if _has_assistant_command_shape(cleaned):
+        return _truncate_text(cleaned, ASSISTANT_MAX_ANSWER_CHARS)
+
+    matches = context.get("matches", []) or []
+    docs = []
+    for item in matches[:3]:
+        title = item.get("title") or item.get("document_name") or item.get("name")
+        if title:
+            docs.append(str(title))
+    docs_text = ", ".join(docs) if docs else "dostupný AI_OS kontext"
+    status = "OPEN / pripravené na ďalší krok"
+    return _truncate_text(
+        "1. Pochopenie zadania\n"
+        f"Daniel žiada: {_assistant_safe_line(message, 500)}\n\n"
+        "2. Najbližší krok\n"
+        f"Použijem dostupný kontext ({docs_text}) a pripravím praktický postup alebo výstup.\n\n"
+        "3. Čo AI_OS pripraví\n"
+        f"{_assistant_safe_line(cleaned, 1400) if cleaned else 'Pripravím odpoveď na základe nájdených dokumentov a aktuálneho stavu AI_OS.'}\n\n"
+        "4. Čo má Daniel schváliť\n"
+        "Schváľ najbližší krok alebo doplň, či mám pokračovať implementáciou, zápisom alebo auditom.\n\n"
+        "5. Stav úlohy\n"
+        f"{status}",
+        ASSISTANT_MAX_ANSWER_CHARS,
     )
 
 
@@ -2821,6 +2890,9 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
 
     message = payload.message.strip()
     context = _orchestrator_build_context(message=message, limit=payload.limit or 5)
+    assistant_mode_enabled = ENABLE_ASSISTANT_COMMAND_MODE and bool(getattr(payload, "assistant_mode", True))
+    context["assistant_mode_enabled"] = assistant_mode_enabled
+    context["assistant_command_mode_version"] = ASSISTANT_COMMAND_MODE_VERSION
 
     ai_result = await _call_ai_reasoning(message, context)
     answer = ai_result.get("answer")
@@ -2863,6 +2935,8 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         saved_document = _create_document(doc_payload)
 
     user_answer = _clean_answer_for_user(answer)
+    if assistant_mode_enabled:
+        user_answer = _format_assistant_command_answer(message, user_answer, context)
 
     if not payload.debug:
         return {
@@ -2871,8 +2945,10 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         }
 
     debug_payload = {
-        "version": "1.3.5.4",
+        "version": "1.3.6",
         "service": APP_NAME,
+        "assistant_command_mode": assistant_mode_enabled,
+        "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
         "action": "ORCHESTRATE",
         "message": message,
         "reasoning_engine": reasoning_engine,
@@ -2908,6 +2984,8 @@ def orchestrator_health_get(request: Request):
         "status": "ok",
         "service": APP_NAME,
         "orchestrator": "enabled",
+        "assistant_command_mode": "enabled" if ENABLE_ASSISTANT_COMMAND_MODE else "disabled",
+        "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
         **status,
         **master_state_status,
         # Backward compatibility with earlier health checks:
@@ -2929,6 +3007,7 @@ async def orchestrator_ask_get(
     project_id: str = "AI_OS",
     limit: int = 5,
     debug: bool = False,
+    assistant_mode: bool = True,
 ):
     _check_token(request)
     return await _orchestrate(OrchestratorRequest(
@@ -2938,6 +3017,7 @@ async def orchestrator_ask_get(
         project_id=project_id,
         limit=limit,
         debug=debug,
+        assistant_mode=assistant_mode,
     ))
 
 
