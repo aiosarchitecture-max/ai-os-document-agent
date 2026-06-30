@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_1_KNOWLEDGE_RETRIEVAL_MEMORY_FIX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_2_ULTRA_MEMORY_SAFE_INDEX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.5.1",
+    version="1.3.5.2",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -449,6 +449,79 @@ def _normalize_search_text(value: str) -> str:
     return (value or "").lower().strip()
 
 
+
+def _find_google_doc_by_exact_name_anywhere(drive_service, name: str) -> Optional[dict]:
+    """Memory-safe exact-name lookup across Google Drive.
+
+    This intentionally avoids recursive AI_OS tree scans. It is used by the
+    v1.3.5.2 ultra-safe index to find only the small set of core Governance
+    documents needed for Knowledge Retrieval on Render Free.
+    """
+    safe_name = _safe_query_string((name or "").strip())
+    if not safe_name:
+        return None
+    q = (
+        f"name='{safe_name}' and "
+        "mimeType='application/vnd.google-apps.document' and "
+        "trashed=false"
+    )
+    result = drive_service.files().list(
+        q=q,
+        fields="files(id,name,mimeType,webViewLink,parents)",
+        pageSize=5,
+        supportsAllDrives=True,
+        includeItemsFromAllDrives=True,
+    ).execute()
+    files = result.get("files", [])
+    return files[0] if files else None
+
+
+def _build_governance_only_index(drive_service, max_documents: int = 20) -> Dict[str, Any]:
+    """Build a tiny memory-safe index from known AI_OS Governance documents."""
+    safe_limit = max(1, min(int(max_documents or MAX_INDEX_DOCUMENTS), 50))
+    indexed_documents: List[Dict[str, Any]] = []
+    errors: List[Dict[str, Any]] = []
+    seen_ids = set()
+
+    for name in GOVERNANCE_DOCUMENT_CANDIDATES:
+        if len(indexed_documents) >= safe_limit:
+            break
+        try:
+            item = _find_google_doc_by_exact_name_anywhere(drive_service, name)
+            if not item:
+                errors.append({"name": name, "error": "not_found"})
+                continue
+            doc_id = item.get("id")
+            if not doc_id or doc_id in seen_ids:
+                continue
+            seen_ids.add(doc_id)
+            indexed_documents.append({
+                "name": item.get("name", ""),
+                "id": doc_id,
+                "url": item.get("webViewLink", ""),
+                "parents": item.get("parents", []),
+                "content_status": "metadata_only_governance_core",
+                "text_length": 0,
+                "indexed_text": "",
+            })
+        except Exception as exc:
+            errors.append({"name": name, "error": _safe_error_text(exc)})
+
+    index = {
+        "status": "ready",
+        "created_utc": _now_iso(),
+        "created_local": _now_local_iso(),
+        "document_count": len(indexed_documents),
+        "max_documents": safe_limit,
+        "max_chars_per_document": 0,
+        "index_mode": "governance_only_ultra_safe",
+        "documents": indexed_documents,
+        "errors": errors,
+    }
+    AI_OS_INDEX.clear()
+    AI_OS_INDEX.update(index)
+    return index
+
 def _build_ai_os_knowledge_index(
     drive_service,
     max_documents: int = 500,
@@ -463,7 +536,13 @@ def _build_ai_os_knowledge_index(
     - /search uses this metadata index for fast name search and Google Drive
       server-side fullText search for content search.
     """
-    safe_limit = max(1, min(int(max_documents or 500), 2000))
+    if INDEX_GOVERNANCE_ONLY:
+        return _build_governance_only_index(
+            drive_service,
+            max_documents=max_documents or MAX_INDEX_DOCUMENTS,
+        )
+
+    safe_limit = max(1, min(int(max_documents or MAX_INDEX_DOCUMENTS), 200))
 
     docs = _list_ai_os_google_docs_recursive(drive_service, max_documents=safe_limit)
     indexed_documents: List[Dict[str, Any]] = []
@@ -504,7 +583,7 @@ def _compact_index_document(item: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _ensure_ai_os_index_ready(max_documents: int = 500) -> Dict[str, Any]:
+def _ensure_ai_os_index_ready(max_documents: int = MAX_INDEX_DOCUMENTS) -> Dict[str, Any]:
     """Ensure the in-memory index exists before /search or /orchestrator/ask.
 
     Render free services can restart or route requests after inactivity. The old version
@@ -530,7 +609,7 @@ def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
 
     if AI_OS_INDEX.get("status") != "ready" or not AI_OS_INDEX.get("documents"):
         try:
-            _ensure_ai_os_index_ready(max_documents=500)
+            _ensure_ai_os_index_ready(max_documents=MAX_INDEX_DOCUMENTS)
         except Exception as exc:
             return {
                 "status": "success",
@@ -598,7 +677,7 @@ def _search_in_knowledge_index(query: str, limit: int = 10) -> Dict[str, Any]:
             result = drive_service.files().list(
                 q=drive_q,
                 fields="files(id,name,mimeType,webViewLink,parents)",
-                pageSize=min(100, safe_limit * 5),
+                pageSize=max(1, min(DRIVE_SEARCH_PAGE_SIZE, safe_limit * 2)),
                 supportsAllDrives=True,
                 includeItemsFromAllDrives=True,
             ).execute()
@@ -1302,7 +1381,7 @@ def list_ai_os_documents_get(request: Request, limit: int = 500):
 
 
 @app.get("/refresh-index")
-def refresh_index_get(request: Request, limit: int = 500, max_chars: int = 0):
+def refresh_index_get(request: Request, limit: int = MAX_INDEX_DOCUMENTS, max_chars: int = 0):
     _check_token(request)
     try:
         drive_service = _drive()
@@ -1321,6 +1400,7 @@ def refresh_index_get(request: Request, limit: int = 500, max_chars: int = 0):
             "created_local": index.get("created_local"),
             "max_documents": index.get("max_documents"),
             "max_chars_per_document": index.get("max_chars_per_document"),
+            "index_mode": index.get("index_mode", "metadata_recursive"),
             "sample_documents": [_compact_index_document(item) for item in index.get("documents", [])[:20]],
             "errors": index.get("errors", [])[:20],
             "note": "Fast metadata index is ready. /search will use document names from the index and Google Drive server-side fullText search for content.",
@@ -1462,8 +1542,15 @@ SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "2"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
 MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "700"))
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
-KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.1-knowledge-retrieval-memory-safe"
+KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.2-ultra-memory-safe-index"
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
+
+# Ultra memory safe index configuration for Render Free (512 MB RAM).
+# Default behavior indexes only core governance documents, not the whole Drive tree.
+MAX_INDEX_DOCUMENTS = int(os.getenv("MAX_INDEX_DOCUMENTS", "20"))
+INDEX_GOVERNANCE_ONLY = os.getenv("INDEX_GOVERNANCE_ONLY", "true").strip().lower() not in {"0", "false", "no", "off"}
+DRIVE_SEARCH_PAGE_SIZE = int(os.getenv("DRIVE_SEARCH_PAGE_SIZE", "10"))
+
 
 GOVERNANCE_DOCUMENT_CANDIDATES = [
     "AI_OS_MASTER_STATE_v1.0",
@@ -1473,7 +1560,9 @@ GOVERNANCE_DOCUMENT_CANDIDATES = [
     "AI_OS_DECISIONS_v1.0",
     "AI_OS_KNOWLEDGE_POLICY_v1.0",
     "AI_OS_DOCUMENTATION_STANDARD_v1.0",
+    "AI_OS_DOCUMENTATION_STANDARD",
     "AI_OS_GLOSSARY",
+    "AI_OS_GLOSSARY_v1.0",
     "AI_OS_NOTES",
 ]
 
@@ -1552,9 +1641,14 @@ def _load_master_state(max_chars: Optional[int] = None) -> Dict[str, Any]:
 
     try:
         drive_service = _drive()
-        doc = _find_optional_doc_by_name(drive_service, MASTER_STATE_DOCUMENT_NAME)
+        doc = None
+        for master_name in ["AI_OS_MASTER_STATE_v1.0", MASTER_STATE_DOCUMENT_NAME]:
+            doc = _find_google_doc_by_exact_name_anywhere(drive_service, master_name)
+            if doc:
+                result["name"] = doc.get("name") or master_name
+                break
         if not doc:
-            result["error"] = f"{MASTER_STATE_DOCUMENT_NAME} not found in AI_OS root folder."
+            result["error"] = "AI_OS_MASTER_STATE not found."
             return result
 
         result["found"] = True
@@ -1783,7 +1877,7 @@ def _build_working_context(
         raise HTTPException(status_code=400, detail="Parameter query is required.")
 
     drive_service = _drive()
-    doc = _find_optional_doc_by_name(drive_service, requested_name)
+    doc = _find_google_doc_by_exact_name_anywhere(drive_service, requested_name)
     if not doc:
         raise HTTPException(
             status_code=404,
@@ -1926,6 +2020,9 @@ def _retrieval_config() -> Dict[str, Any]:
         "max_context_chars": _safe_int(MAX_CONTEXT_CHARS, 12000, 3000, 50000),
         "max_chars_per_snippet": _safe_int(MAX_CHARS_PER_RETRIEVAL_SNIPPET, 900, 200, 3000),
         "min_relevance_score": _safe_float(MIN_RELEVANCE_SCORE, 0.25, 0.0, 100.0),
+        "max_index_docs": _safe_int(MAX_INDEX_DOCUMENTS, 20, 1, 50),
+        "index_governance_only": INDEX_GOVERNANCE_ONLY,
+        "drive_search_page_size": _safe_int(DRIVE_SEARCH_PAGE_SIZE, 10, 1, 50),
         "pipeline_version": KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION,
     }
 
@@ -1975,7 +2072,7 @@ def _unique_document_candidates(message: str, search_matches: List[Dict[str, Any
     # Master state is always first source of truth. Prefer v1.0 if it exists, otherwise legacy name.
     for master_name in ["AI_OS_MASTER_STATE_v1.0", MASTER_STATE_DOCUMENT_NAME]:
         try:
-            doc = _find_optional_doc_by_name(drive_service, master_name)
+            doc = _find_google_doc_by_exact_name_anywhere(drive_service, master_name)
             if doc:
                 identity = _document_identity_from_doc(doc)
                 add_candidate({**identity, "score": 9999, "match_type": "master_state"}, "master_state")
@@ -1989,7 +2086,7 @@ def _unique_document_candidates(message: str, search_matches: List[Dict[str, Any
     # Governance documents are highly relevant for AI_OS operation. Add them as fallback candidates.
     for name in GOVERNANCE_DOCUMENT_CANDIDATES:
         try:
-            doc = _find_optional_doc_by_name(drive_service, name)
+            doc = _find_google_doc_by_exact_name_anywhere(drive_service, name)
             if doc:
                 identity = _document_identity_from_doc(doc)
                 add_candidate({**identity, "score": 50, "match_type": "governance_candidate"}, "governance")
