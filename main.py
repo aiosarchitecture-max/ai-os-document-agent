@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_3_IMPORT_ORDER_FIX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_4_COMPACT_DEBUG_OUTPUT"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.5.2",
+    version="1.3.5.4",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -1483,7 +1483,8 @@ def orchestrator_knowledge_retrieval_get(
             "status": "success",
             "service": APP_NAME,
             "action": "KNOWLEDGE_RETRIEVAL",
-            "knowledge_retrieval": retrieval,
+            "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(retrieval),
+            "debug_compacted": True,
             "time_utc": _now_iso(),
             "time_local": _now_local_iso(),
             "timezone": AI_OS_TIMEZONE_NAME,
@@ -1549,8 +1550,11 @@ SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "2"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
 MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "700"))
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
-KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.3-import-order-fix"
+KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
+MAX_DEBUG_CHARS = int(os.getenv("MAX_DEBUG_CHARS", "3000"))
+DEBUG_TEXT_PREVIEW_CHARS = int(os.getenv("DEBUG_TEXT_PREVIEW_CHARS", "220"))
+DEBUG_MAX_BLOCKS = int(os.getenv("DEBUG_MAX_BLOCKS", "8"))
 
 # Ultra memory safe index configuration for Render Free (512 MB RAM).
 # Default behavior indexes only core governance documents, not the whole Drive tree.
@@ -2440,9 +2444,66 @@ def _orchestrator_user_prompt(message: str, context: Dict[str, Any]) -> str:
     )
 
 
+def _compact_block_for_debug(block: Dict[str, Any], preview_chars: Optional[int] = None) -> Dict[str, Any]:
+    """Return a small debug-safe block without full text.
+
+    v1.3.5.4 rule: debug=true must explain what happened, not return the
+    full WorkingContext. This prevents browser hangs and Render Free memory spikes.
+    """
+    preview_limit = _safe_int(preview_chars or DEBUG_TEXT_PREVIEW_CHARS, 220, 80, 1000)
+    return {
+        "document_name": block.get("document_name"),
+        "document_id": block.get("document_id"),
+        "document_url": block.get("document_url"),
+        "block_id": block.get("block_id") or block.get("id"),
+        "score": block.get("score"),
+        "document_relevance_score": block.get("document_relevance_score"),
+        "matched_keywords": (block.get("matched_keywords") or [])[:10],
+        "text_preview": _truncate_text(block.get("text"), preview_limit),
+        "text_length": len(block.get("text") or ""),
+    }
+
+
+def _compact_working_context_for_debug(wc: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not wc:
+        return None
+    blocks = wc.get("selected_blocks") or []
+    max_blocks = _safe_int(DEBUG_MAX_BLOCKS, 8, 1, 30)
+    return {
+        "query": wc.get("query"),
+        "document_name": wc.get("document_name"),
+        "document_id": wc.get("document_id"),
+        "document_url": wc.get("document_url"),
+        "text_length": wc.get("text_length"),
+        "keywords": (wc.get("keywords") or [])[:20],
+        "blocks_count": wc.get("blocks_count"),
+        "selected_block_count": len(blocks),
+        "selected_blocks_preview": [_compact_block_for_debug(block) for block in blocks[:max_blocks]],
+        "truncated_blocks": max(0, len(blocks) - max_blocks),
+        "created_utc": wc.get("created_utc"),
+        "pipeline_version": wc.get("pipeline_version"),
+        "provider": wc.get("provider"),
+        "ai_response": None,
+    }
+
+
 def _compact_knowledge_retrieval_for_debug(kr: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not kr:
         return None
+    max_blocks = _safe_int(DEBUG_MAX_BLOCKS, 8, 1, 30)
+    selected_blocks = kr.get("selected_blocks") or []
+    compact_documents = []
+    for doc in (kr.get("used_documents") or [])[:12]:
+        compact_documents.append({
+            "document_name": doc.get("document_name"),
+            "document_id": doc.get("document_id"),
+            "document_url": doc.get("document_url"),
+            "source": doc.get("source"),
+            "relevance_score": doc.get("relevance_score"),
+            "matched_keywords": (doc.get("matched_keywords") or [])[:10],
+            "selected_snippet_count": doc.get("selected_snippet_count"),
+            "text_length": doc.get("text_length"),
+        })
     return {
         "query": kr.get("query"),
         "pipeline_version": kr.get("pipeline_version"),
@@ -2450,21 +2511,75 @@ def _compact_knowledge_retrieval_for_debug(kr: Optional[Dict[str, Any]]) -> Opti
         "config": kr.get("config"),
         "search_found": kr.get("search_found"),
         "index_status": kr.get("index_status"),
+        "requires_refresh_index": kr.get("requires_refresh_index", False),
         "candidate_count": kr.get("candidate_count"),
         "used_document_count": kr.get("used_document_count"),
-        "used_documents": kr.get("used_documents"),
-        "selected_blocks": [
-            {
-                **{k: v for k, v in block.items() if k != "text"},
-                "text_preview": _truncate_text(block.get("text"), 600),
-            }
-            for block in (kr.get("selected_blocks") or [])
-        ],
+        "used_documents": compact_documents,
+        "selected_block_count": len(selected_blocks),
+        "selected_blocks_preview": [_compact_block_for_debug(block) for block in selected_blocks[:max_blocks]],
+        "truncated_blocks": max(0, len(selected_blocks) - max_blocks),
         "context_chars": kr.get("context_chars"),
-        "errors": kr.get("errors"),
+        "error_count": len(kr.get("errors") or []),
+        "errors_preview": (kr.get("errors") or [])[:5],
         "created_utc": kr.get("created_utc"),
     }
 
+
+def _debug_payload_compact(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Hard cap debug response size as a last safety line.
+
+    Normal compacting above should already keep responses small. This function
+    prevents any unexpected field from making the JSON huge.
+    """
+    max_chars = _safe_int(MAX_DEBUG_CHARS, 3000, 1000, 20000)
+    text = json.dumps(payload, ensure_ascii=False)
+    if len(text) <= max_chars:
+        payload["debug_size_chars"] = len(text)
+        payload["debug_truncated"] = False
+        return payload
+    safe = {
+        "version": payload.get("version"),
+        "service": payload.get("service"),
+        "action": payload.get("action"),
+        "message": payload.get("message"),
+        "reasoning_engine": payload.get("reasoning_engine"),
+        "reasoning_model": payload.get("reasoning_model"),
+        "provider_attempts": payload.get("provider_attempts"),
+        "context_mode": payload.get("context_mode"),
+        "knowledge_retrieval_used": payload.get("knowledge_retrieval_used"),
+        "knowledge_retrieval": payload.get("knowledge_retrieval"),
+        "knowledge_retrieval_error": payload.get("knowledge_retrieval_error"),
+        "working_context_used": payload.get("working_context_used"),
+        "working_context": payload.get("working_context"),
+        "working_context_error": payload.get("working_context_error"),
+        "saved_document": payload.get("saved_document"),
+        "time_utc": payload.get("time_utc"),
+        "time_local": payload.get("time_local"),
+        "timezone": payload.get("timezone"),
+        "debug_truncated": True,
+        "debug_size_chars_before_truncate": len(text),
+    }
+    # If still large, keep only the minimum operational diagnostic fields.
+    text2 = json.dumps(safe, ensure_ascii=False)
+    if len(text2) > max_chars:
+        kr = safe.get("knowledge_retrieval") or {}
+        safe["knowledge_retrieval"] = {
+            "pipeline_version": kr.get("pipeline_version"),
+            "used_document_count": kr.get("used_document_count"),
+            "used_documents": (kr.get("used_documents") or [])[:6],
+            "selected_block_count": kr.get("selected_block_count"),
+            "context_chars": kr.get("context_chars"),
+            "error_count": kr.get("error_count"),
+        }
+        wc = safe.get("working_context") or {}
+        safe["working_context"] = {
+            "document_name": wc.get("document_name"),
+            "text_length": wc.get("text_length"),
+            "selected_block_count": wc.get("selected_block_count"),
+            "pipeline_version": wc.get("pipeline_version"),
+        }
+    safe["debug_size_chars"] = len(json.dumps(safe, ensure_ascii=False))
+    return safe
 
 def _safe_error_text(exc: Exception, limit: int = 800) -> str:
     """Return short safe error text without secrets."""
@@ -2755,30 +2870,32 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
             "answer": user_answer,
         }
 
+    debug_payload = {
+        "version": "1.3.5.4",
+        "service": APP_NAME,
+        "action": "ORCHESTRATE",
+        "message": message,
+        "reasoning_engine": reasoning_engine,
+        "reasoning_model": reasoning_model,
+        "provider_attempts": provider_attempts,
+        "raw_answer_preview": _truncate_text(answer, 600),
+        "context_mode": context.get("mode"),
+        "knowledge_retrieval_used": context.get("knowledge_retrieval_used", False),
+        "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(context.get("knowledge_retrieval")),
+        "knowledge_retrieval_error": context.get("knowledge_retrieval_error"),
+        "working_context_used": context.get("working_context_used", False),
+        "working_context": _compact_working_context_for_debug(context.get("working_context")),
+        "working_context_error": context.get("working_context_error"),
+        "saved_document": saved_document,
+        "time_utc": _now_iso(),
+        "time_local": _now_local_iso(),
+        "timezone": AI_OS_TIMEZONE_NAME,
+    }
+
     return {
         "status": "success",
         "answer": user_answer,
-        "debug": {
-            "version": "1.3.5.1",
-            "service": APP_NAME,
-            "action": "ORCHESTRATE",
-            "message": message,
-            "reasoning_engine": reasoning_engine,
-            "reasoning_model": reasoning_model,
-            "provider_attempts": provider_attempts,
-            "raw_answer": answer,
-            "context_mode": context.get("mode"),
-            "knowledge_retrieval_used": context.get("knowledge_retrieval_used", False),
-            "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(context.get("knowledge_retrieval")),
-            "knowledge_retrieval_error": context.get("knowledge_retrieval_error"),
-            "working_context_used": context.get("working_context_used", False),
-            "working_context": {**(context.get("working_context") or {}), "selected_blocks": [{**{k: v for k, v in b.items() if k != "text"}, "text_preview": _truncate_text(b.get("text"), 600)} for b in ((context.get("working_context") or {}).get("selected_blocks") or [])]},
-            "working_context_error": context.get("working_context_error"),
-            "saved_document": saved_document,
-            "time_utc": _now_iso(),
-            "time_local": _now_local_iso(),
-            "timezone": AI_OS_TIMEZONE_NAME,
-        },
+        "debug": _debug_payload_compact(debug_payload),
     }
 
 
