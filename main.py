@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_2_ULTRA_MEMORY_SAFE_INDEX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_5_3_IMPORT_ORDER_FIX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -449,6 +449,13 @@ def _normalize_search_text(value: str) -> str:
     return (value or "").lower().strip()
 
 
+
+
+# Early ultra-safe index constants.
+# These must be defined before any function or FastAPI route uses them as default values.
+# They are intentionally repeated later in the configuration section for readability;
+# the value remains identical because both read the same environment variable.
+MAX_INDEX_DOCUMENTS = int(os.getenv("MAX_INDEX_DOCUMENTS", "20"))
 
 def _find_google_doc_by_exact_name_anywhere(drive_service, name: str) -> Optional[dict]:
     """Memory-safe exact-name lookup across Google Drive.
@@ -1542,7 +1549,7 @@ SNIPPETS_PER_DOCUMENT = int(os.getenv("SNIPPETS_PER_DOCUMENT", "2"))
 MAX_CONTEXT_CHARS = int(os.getenv("MAX_CONTEXT_CHARS", "6000"))
 MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET", "700"))
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
-KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.2-ultra-memory-safe-index"
+KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.3-import-order-fix"
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
 
 # Ultra memory safe index configuration for Render Free (512 MB RAM).
