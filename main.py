@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_6_ASSISTANT_COMMAND_MODE"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_7_1_KNOWLEDGE_EVOLUTION_ENGINE_FIX"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -1054,7 +1054,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.7 is online. Knowledge Retrieval and SRV-001 Knowledge Evolution are enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.3.7.1 is online. Knowledge Retrieval and SRV-001 Knowledge Evolution are enabled for /orchestrator/ask.",
     }
 
 
@@ -1553,7 +1553,7 @@ MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
 KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
 ASSISTANT_COMMAND_MODE_VERSION = "1.3.6-assistant-command-mode"
-KNOWLEDGE_EVOLUTION_ENGINE_VERSION = "1.3.7-knowledge-evolution-engine"
+KNOWLEDGE_EVOLUTION_ENGINE_VERSION = "1.3.7.1-knowledge-evolution-engine-fix"
 ENABLE_KNOWLEDGE_EVOLUTION_ENGINE = os.getenv("ENABLE_KNOWLEDGE_EVOLUTION_ENGINE", "true").strip().lower() not in {"0", "false", "no", "off"}
 KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE = float(os.getenv("KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE", "0.35"))
 ENABLE_ASSISTANT_COMMAND_MODE = os.getenv("ENABLE_ASSISTANT_COMMAND_MODE", "true").strip().lower() not in ("0", "false", "no", "off")
@@ -2467,7 +2467,7 @@ def _knowledge_evolution_config() -> Dict[str, Any]:
     }
 
 
-def _safe_float(value: Any, default: float = 0.0) -> float:
+def _safe_score_float(value: Any, default: float = 0.0) -> float:
     try:
         if value is None:
             return default
@@ -2492,7 +2492,7 @@ def _top_document_scores(kr: Optional[Dict[str, Any]]) -> List[float]:
         return []
     scores: List[float] = []
     for doc in (kr.get("used_documents") or []):
-        scores.append(_safe_float(doc.get("relevance_score"), 0.0))
+        scores.append(_safe_score_float(doc.get("relevance_score"), 0.0))
     return sorted(scores, reverse=True)
 
 
@@ -3132,7 +3132,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         }
 
     debug_payload = {
-        "version": "1.3.7",
+        "version": "1.3.7.1",
         "service": APP_NAME,
         "assistant_command_mode": assistant_mode_enabled,
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
@@ -3210,6 +3210,20 @@ def orchestrator_health_get(request: Request):
     }
 
 
+def _parse_bool_query(value: Any, default: bool = True) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    # Accept common browser/query values and ignore accidentally pasted Slovak test notes after the value.
+    if text.startswith(("0", "false", "no", "off", "disabled")):
+        return False
+    if text.startswith(("1", "true", "yes", "on", "enabled")):
+        return True
+    return default
+
+
 @app.get("/orchestrator/ask")
 async def orchestrator_ask_get(
     request: Request,
@@ -3219,7 +3233,7 @@ async def orchestrator_ask_get(
     project_id: str = "AI_OS",
     limit: int = 5,
     debug: bool = False,
-    assistant_mode: bool = True,
+    assistant_mode: Optional[str] = None,
 ):
     _check_token(request)
     return await _orchestrate(OrchestratorRequest(
@@ -3229,7 +3243,7 @@ async def orchestrator_ask_get(
         project_id=project_id,
         limit=limit,
         debug=debug,
-        assistant_mode=assistant_mode,
+        assistant_mode=_parse_bool_query(assistant_mode, True),
     ))
 
 
