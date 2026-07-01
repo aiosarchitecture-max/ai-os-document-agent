@@ -9,14 +9,15 @@ import httpx
 from typing import Optional, List, Dict, Any
 from zoneinfo import ZoneInfo
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from google.oauth2 import service_account
 from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_0_EXECUTIVE_ASSISTANT"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_1_EXECUTIVE_ASSISTANT_STABILIZATION"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,9 +42,24 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.4.0",
+    version="1.4.1",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    return JSONResponse(
+        status_code=500,
+        content={
+            "status": "error",
+            "service": APP_NAME,
+            "path": str(request.url.path),
+            "error": _safe_error_text(exc) if "_safe_error_text" in globals() else str(exc)[:500],
+            "time_utc": _now_iso() if "_now_iso" in globals() else None,
+            "note": "Global Exception Shield: endpoint returned JSON instead of crashing.",
+        },
+    )
 
 
 class WriteRequest(BaseModel):
@@ -1057,13 +1073,17 @@ def _compact_success(
         response.update(extra)
     return response
 
+@app.head("/")
+def root_head():
+    return Response(status_code=200)
+
 
 @app.get("/")
 def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.7.1 is online. Knowledge Retrieval and SRV-001 Knowledge Evolution are enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.4.1 is online. Executive Assistant stabilization is enabled. Use /assistant/health and /assistant.",
     }
 
 
@@ -1563,7 +1583,7 @@ MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
 KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
 ASSISTANT_COMMAND_MODE_VERSION = "1.3.6-assistant-command-mode"
 KNOWLEDGE_EVOLUTION_ENGINE_VERSION = "1.3.7.1-knowledge-evolution-engine-fix"
-EXECUTIVE_ASSISTANT_VERSION = "1.4.0-executive-assistant"
+EXECUTIVE_ASSISTANT_VERSION = "1.4.1-executive-assistant-stabilization"
 ENABLE_KNOWLEDGE_EVOLUTION_ENGINE = os.getenv("ENABLE_KNOWLEDGE_EVOLUTION_ENGINE", "true").strip().lower() not in {"0", "false", "no", "off"}
 KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE = float(os.getenv("KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE", "0.35"))
 ENABLE_ASSISTANT_COMMAND_MODE = os.getenv("ENABLE_ASSISTANT_COMMAND_MODE", "true").strip().lower() not in ("0", "false", "no", "off")
@@ -3083,67 +3103,111 @@ def _clean_answer_for_user(answer: Any) -> str:
 
 
 async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
+    """Production-safe orchestrator.
+
+    Contract for v1.4.1: /orchestrator/ask must never crash the service.
+    If retrieval, provider calls, formatting, or document write fails, return a
+    deterministic degraded response with debug-safe diagnostics instead of HTTP 502/503.
+    """
     if not payload.message or not payload.message.strip():
         raise HTTPException(status_code=400, detail="message is required.")
 
     message = payload.message.strip()
-    context = _orchestrator_build_context(message=message, limit=payload.limit or 5)
+    errors: List[Dict[str, Any]] = []
+
+    try:
+        context = _orchestrator_build_context(message=message, limit=payload.limit or 5)
+    except Exception as exc:
+        context = {
+            "mode": "safe_fallback",
+            "matches": [],
+            "requires_refresh_index": False,
+            "context_error": _safe_error_text(exc),
+        }
+        errors.append({"stage": "build_context", "error": _safe_error_text(exc)})
+
     assistant_mode_enabled = ENABLE_ASSISTANT_COMMAND_MODE and bool(getattr(payload, "assistant_mode", True))
     context["assistant_mode_enabled"] = assistant_mode_enabled
     context["assistant_command_mode_version"] = ASSISTANT_COMMAND_MODE_VERSION
 
-    ai_result = await _call_ai_reasoning(message, context)
+    ai_result: Dict[str, Any]
+    try:
+        ai_result = await _call_ai_reasoning(message, context)
+    except Exception as exc:
+        ai_result = {"answer": None, "reasoning_engine": "deterministic", "model": None, "attempts": []}
+        errors.append({"stage": "call_ai_reasoning", "error": _safe_error_text(exc)})
+
     answer = ai_result.get("answer")
     reasoning_engine = ai_result.get("reasoning_engine") or "deterministic"
     reasoning_model = ai_result.get("model")
     provider_attempts = ai_result.get("attempts", [])
 
     if not answer:
-        answer = _orchestrator_deterministic_answer(message, context)
+        try:
+            answer = _orchestrator_deterministic_answer(message, context)
+        except Exception as exc:
+            answer = (
+                "AI_OS beží v bezpečnom režime. Požiadavku som prijal, ale pri zostavení "
+                "odpovede nastala chyba. Skontroluj /orchestrator/health, obnov index cez "
+                "/refresh-index a zopakuj požiadavku."
+            )
+            errors.append({"stage": "deterministic_answer", "error": _safe_error_text(exc)})
         reasoning_engine = "deterministic"
         reasoning_model = None
 
     saved_document = None
     if payload.write_result:
-        title = payload.result_title or f"AI_OS_ORCHESTRATOR_RESULT_{_today_id_date()}"
-        doc_payload = DocumentRequest(
-            title=title,
-            object_type="DOCUMENT",
-            document_category=ORCHESTRATOR_RESULT_CATEGORY,
-            project_id=(payload.project_id or "AI_OS"),
-            status="APPROVED",
-            owner=DEFAULT_OWNER,
-            version="1.0",
-            content=(
-                "AI_OS_ORCHESTRATOR_RESULT\n"
-                + _timestamp_block("Created")
-                + f"USER_MESSAGE:\n{message}\n\n"
-                + f"REASONING_ENGINE: {reasoning_engine}\n"
-                + f"REASONING_MODEL: {reasoning_model}\n"
-                + "PROVIDER_ATTEMPTS:\n"
-                + json.dumps(provider_attempts, ensure_ascii=False, indent=2)
-                + "\n\nANSWER:\n"
-                + f"{answer}\n\n"
-                + "CONTEXT:\n"
-                + json.dumps(context, ensure_ascii=False, indent=2)
-            ),
-            source_object_id="AI_OS_ORCHESTRATOR",
-            related_objects=[],
-        )
-        saved_document = _create_document(doc_payload)
+        try:
+            title = payload.result_title or f"AI_OS_ORCHESTRATOR_RESULT_{_today_id_date()}"
+            doc_payload = DocumentRequest(
+                title=title,
+                object_type="DOCUMENT",
+                document_category=ORCHESTRATOR_RESULT_CATEGORY,
+                project_id=(payload.project_id or "AI_OS"),
+                status="APPROVED",
+                owner=DEFAULT_OWNER,
+                version="1.0",
+                content=(
+                    "AI_OS_ORCHESTRATOR_RESULT\n"
+                    + _timestamp_block("Created")
+                    + f"USER_MESSAGE:\n{message}\n\n"
+                    + f"REASONING_ENGINE: {reasoning_engine}\n"
+                    + f"REASONING_MODEL: {reasoning_model}\n"
+                    + "PROVIDER_ATTEMPTS:\n"
+                    + json.dumps(provider_attempts, ensure_ascii=False, indent=2)
+                    + "\n\nANSWER:\n"
+                    + f"{answer}\n\n"
+                    + "CONTEXT:\n"
+                    + json.dumps(context, ensure_ascii=False, indent=2)
+                ),
+                source_object_id="AI_OS_ORCHESTRATOR",
+                related_objects=[],
+            )
+            saved_document = _create_document(doc_payload)
+        except Exception as exc:
+            saved_document = {"status": "write_failed", "error": _safe_error_text(exc)}
+            errors.append({"stage": "write_result", "error": _safe_error_text(exc)})
 
-    user_answer = _clean_answer_for_user(answer)
+    try:
+        user_answer = _clean_answer_for_user(answer)
+    except Exception as exc:
+        user_answer = str(answer or "").strip() or "AI_OS pripravil odpoveď v bezpečnom režime."
+        errors.append({"stage": "clean_answer", "error": _safe_error_text(exc)})
+
     if assistant_mode_enabled:
-        user_answer = _format_assistant_command_answer(message, user_answer, context)
+        try:
+            user_answer = _format_assistant_command_answer(message, user_answer, context)
+        except Exception as exc:
+            errors.append({"stage": "assistant_format", "error": _safe_error_text(exc)})
 
     if not payload.debug:
-        return {
-            "status": "success",
-            "answer": user_answer,
-        }
+        result = {"status": "success", "answer": user_answer}
+        if errors:
+            result["safe_mode"] = True
+        return result
 
     debug_payload = {
-        "version": "1.4.0",
+        "version": "1.4.1",
         "service": APP_NAME,
         "assistant_command_mode": assistant_mode_enabled,
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
@@ -3163,6 +3227,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "working_context": _compact_working_context_for_debug(context.get("working_context")),
         "working_context_error": context.get("working_context_error"),
         "saved_document": saved_document,
+        "safe_mode_errors": errors,
         "time_utc": _now_iso(),
         "time_local": _now_local_iso(),
         "timezone": AI_OS_TIMEZONE_NAME,
@@ -3173,6 +3238,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "answer": user_answer,
         "debug": _debug_payload_compact(debug_payload),
     }
+
 
 
 
@@ -3221,6 +3287,10 @@ def _safe_knowledge_evolution_preview(message: str, limit: int) -> Optional[Dict
 
 
 async def _executive_assistant_run(payload: ExecutiveAssistantRequest) -> Dict[str, Any]:
+    """Production-safe Executive Assistant entrypoint.
+
+    v1.4.1 rule: /assistant must return JSON even when inner orchestration is degraded.
+    """
     if not ENABLE_EXECUTIVE_ASSISTANT:
         return {
             "status": "disabled",
@@ -3232,26 +3302,51 @@ async def _executive_assistant_run(payload: ExecutiveAssistantRequest) -> Dict[s
         raise HTTPException(status_code=400, detail="message is required.")
 
     message = payload.message.strip()
-    safe_limit = max(1, min(int(payload.limit or 5), 8))
+    errors: List[Dict[str, Any]] = []
+    try:
+        safe_limit = max(1, min(int(payload.limit or 5), 8))
+    except Exception:
+        safe_limit = 5
     route = _executive_assistant_route(message)
-    orchestrated = await _orchestrate(OrchestratorRequest(
-        message=message,
-        write_result=bool(payload.write_result),
-        result_title=payload.result_title,
-        project_id=payload.project_id or "AI_OS",
-        limit=safe_limit,
-        debug=bool(payload.debug),
-        assistant_mode=True,
-    ))
+
+    try:
+        orchestrated = await _orchestrate(OrchestratorRequest(
+            message=message,
+            write_result=bool(payload.write_result),
+            result_title=payload.result_title,
+            project_id=payload.project_id or "AI_OS",
+            limit=safe_limit,
+            debug=bool(payload.debug),
+            assistant_mode=True,
+        ))
+    except Exception as exc:
+        errors.append({"stage": "orchestrate", "error": _safe_error_text(exc)})
+        orchestrated = {
+            "status": "success",
+            "safe_mode": True,
+            "answer": (
+                "Executive Assistant beží v bezpečnom režime. Požiadavku som prijal, "
+                "ale vnútorná orchestrácia zlyhala. Skontroluj /orchestrator/health a /refresh-index."
+            ),
+        }
+
     answer = orchestrated.get("answer", "")
+    try:
+        next_action = _extract_next_action_from_answer(answer)
+    except Exception as exc:
+        next_action = "Skontrolovať stav endpointov a zopakovať požiadavku."
+        errors.append({"stage": "next_action", "error": _safe_error_text(exc)})
+
     result = {
         "status": "success",
         "assistant": "Executive Assistant",
         "version": EXECUTIVE_ASSISTANT_VERSION,
         "route": route,
         "answer": answer,
-        "next_action": _extract_next_action_from_answer(answer),
+        "next_action": next_action,
     }
+    if orchestrated.get("safe_mode") or errors:
+        result["safe_mode"] = True
     if payload.debug:
         result["debug"] = {
             "orchestrator": orchestrated.get("debug"),
@@ -3259,8 +3354,10 @@ async def _executive_assistant_run(payload: ExecutiveAssistantRequest) -> Dict[s
             "write_result_requested": bool(payload.write_result),
             "public_api_compatibility": "keeps /orchestrator/ask unchanged",
             "rollback": "ENABLE_EXECUTIVE_ASSISTANT=false",
+            "errors": errors,
         }
     return result
+
 
 
 @app.get("/assistant/health")
@@ -3317,16 +3414,28 @@ def orchestrator_knowledge_evolution_get(
     _check_token(request)
     if not message or not message.strip():
         raise HTTPException(status_code=400, detail="message is required.")
-    safe_limit = max(1, min(int(limit or 5), 12))
-    kr = _build_knowledge_retrieval_context(message=message.strip(), limit=safe_limit) if ENABLE_KNOWLEDGE_RETRIEVAL else None
-    ke = _knowledge_evolution_decision(message.strip(), kr)
-    return {
-        "status": "success",
-        "service": "SRV-001 Knowledge Evolution Engine",
-        "knowledge_evolution": _compact_knowledge_evolution_for_debug(ke),
-        "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(kr),
-        "time_utc": _now_iso(),
-    }
+    try:
+        safe_limit = max(1, min(int(limit or 5), 12))
+        kr = _build_knowledge_retrieval_context(message=message.strip(), limit=safe_limit) if ENABLE_KNOWLEDGE_RETRIEVAL else None
+        ke = _knowledge_evolution_decision(message.strip(), kr)
+        return {
+            "status": "success",
+            "service": "SRV-001 Knowledge Evolution Engine",
+            "version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
+            "knowledge_evolution": _compact_knowledge_evolution_for_debug(ke),
+            "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(kr),
+            "time_utc": _now_iso(),
+        }
+    except Exception as exc:
+        return {
+            "status": "success",
+            "service": "SRV-001 Knowledge Evolution Engine",
+            "version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
+            "safe_mode": True,
+            "knowledge_evolution": {"decision": "CREATE NEW", "confidence": 0.0, "reason": "safe fallback after internal error"},
+            "knowledge_retrieval_error": _safe_error_text(exc),
+            "time_utc": _now_iso(),
+        }
 
 @app.get("/orchestrator/health")
 def orchestrator_health_get(request: Request):
