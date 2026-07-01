@@ -16,7 +16,7 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_3_7_1_KNOWLEDGE_EVOLUTION_ENGINE_FIX"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_0_EXECUTIVE_ASSISTANT"
 PUBLIC_BASE_URL = "https://ai-os-document-agent.onrender.com"
 AI_OS_TIMEZONE_NAME = "Europe/Bratislava"
 AI_OS_TIMEZONE = ZoneInfo(AI_OS_TIMEZONE_NAME)
@@ -41,7 +41,7 @@ SCOPES = [
 
 app = FastAPI(
     title=APP_NAME,
-    version="1.3.5.4",
+    version="1.4.0",
     servers=[{"url": PUBLIC_BASE_URL}],
 )
 
@@ -161,6 +161,15 @@ class OrchestratorRequest(BaseModel):
     limit: Optional[int] = 5
     debug: Optional[bool] = False
     assistant_mode: Optional[bool] = True
+
+
+class ExecutiveAssistantRequest(BaseModel):
+    message: str
+    write_result: Optional[bool] = False
+    result_title: Optional[str] = None
+    project_id: Optional[str] = "AI_OS"
+    limit: Optional[int] = 5
+    debug: Optional[bool] = False
 
 
 
@@ -1554,9 +1563,11 @@ MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
 KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
 ASSISTANT_COMMAND_MODE_VERSION = "1.3.6-assistant-command-mode"
 KNOWLEDGE_EVOLUTION_ENGINE_VERSION = "1.3.7.1-knowledge-evolution-engine-fix"
+EXECUTIVE_ASSISTANT_VERSION = "1.4.0-executive-assistant"
 ENABLE_KNOWLEDGE_EVOLUTION_ENGINE = os.getenv("ENABLE_KNOWLEDGE_EVOLUTION_ENGINE", "true").strip().lower() not in {"0", "false", "no", "off"}
 KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE = float(os.getenv("KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE", "0.35"))
 ENABLE_ASSISTANT_COMMAND_MODE = os.getenv("ENABLE_ASSISTANT_COMMAND_MODE", "true").strip().lower() not in ("0", "false", "no", "off")
+ENABLE_EXECUTIVE_ASSISTANT = os.getenv("ENABLE_EXECUTIVE_ASSISTANT", "true").strip().lower() not in ("0", "false", "no", "off")
 ASSISTANT_MAX_ANSWER_CHARS = int(os.getenv("ASSISTANT_MAX_ANSWER_CHARS", "5000"))
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
 MAX_DEBUG_CHARS = int(os.getenv("MAX_DEBUG_CHARS", "3000"))
@@ -3132,7 +3143,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         }
 
     debug_payload = {
-        "version": "1.3.7.1",
+        "version": "1.4.0",
         "service": APP_NAME,
         "assistant_command_mode": assistant_mode_enabled,
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
@@ -3163,6 +3174,138 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "debug": _debug_payload_compact(debug_payload),
     }
 
+
+
+
+def _extract_next_action_from_answer(answer: str) -> str:
+    text = (answer or "").strip()
+    if not text:
+        return "Doplniť alebo zopakovať zadanie."
+    marker = "2. Najbližší krok"
+    idx = text.lower().find(marker.lower())
+    if idx >= 0:
+        tail = text[idx + len(marker):].strip()
+        next_marker = "3. "
+        end = tail.find(next_marker)
+        if end >= 0:
+            tail = tail[:end].strip()
+        tail = re.sub(r"\s+", " ", tail).strip(" -:\n\t")
+        if tail:
+            return _truncate_text(tail, 400)
+    return "Schváliť navrhnutý ďalší krok alebo upresniť zadanie."
+
+
+def _executive_assistant_route(message: str) -> str:
+    lowered = (message or "").lower()
+    if any(word in lowered for word in ["dokument", "zapíš", "ulož", "vytvor dokument", "docx"]):
+        return "document_workflow"
+    if any(word in lowered for word in ["audit", "skontroluj", "over", "rizik"]):
+        return "audit_workflow"
+    if any(word in lowered for word in ["implement", "kód", "deploy", "render", "github"]):
+        return "implementation_workflow"
+    if any(word in lowered for word in ["ďalší krok", "plán", "roadmap", "čo teraz"]):
+        return "planning_workflow"
+    return "general_assistant_workflow"
+
+
+def _safe_knowledge_evolution_preview(message: str, limit: int) -> Optional[Dict[str, Any]]:
+    try:
+        if not ENABLE_KNOWLEDGE_RETRIEVAL:
+            return {"enabled": False, "reason": "ENABLE_KNOWLEDGE_RETRIEVAL=false"}
+        safe_limit = max(1, min(int(limit or 5), 8))
+        kr = _build_knowledge_retrieval_context(message=message.strip(), limit=safe_limit)
+        ke = _knowledge_evolution_decision(message.strip(), kr)
+        return _compact_knowledge_evolution_for_debug(ke)
+    except Exception as exc:
+        return {"safe_mode": True, "error": _safe_error_text(exc)}
+
+
+async def _executive_assistant_run(payload: ExecutiveAssistantRequest) -> Dict[str, Any]:
+    if not ENABLE_EXECUTIVE_ASSISTANT:
+        return {
+            "status": "disabled",
+            "assistant": "Executive Assistant",
+            "version": EXECUTIVE_ASSISTANT_VERSION,
+            "answer": "Executive Assistant je vypnutý cez ENABLE_EXECUTIVE_ASSISTANT=false.",
+        }
+    if not payload.message or not payload.message.strip():
+        raise HTTPException(status_code=400, detail="message is required.")
+
+    message = payload.message.strip()
+    safe_limit = max(1, min(int(payload.limit or 5), 8))
+    route = _executive_assistant_route(message)
+    orchestrated = await _orchestrate(OrchestratorRequest(
+        message=message,
+        write_result=bool(payload.write_result),
+        result_title=payload.result_title,
+        project_id=payload.project_id or "AI_OS",
+        limit=safe_limit,
+        debug=bool(payload.debug),
+        assistant_mode=True,
+    ))
+    answer = orchestrated.get("answer", "")
+    result = {
+        "status": "success",
+        "assistant": "Executive Assistant",
+        "version": EXECUTIVE_ASSISTANT_VERSION,
+        "route": route,
+        "answer": answer,
+        "next_action": _extract_next_action_from_answer(answer),
+    }
+    if payload.debug:
+        result["debug"] = {
+            "orchestrator": orchestrated.get("debug"),
+            "knowledge_evolution": _safe_knowledge_evolution_preview(message, safe_limit),
+            "write_result_requested": bool(payload.write_result),
+            "public_api_compatibility": "keeps /orchestrator/ask unchanged",
+            "rollback": "ENABLE_EXECUTIVE_ASSISTANT=false",
+        }
+    return result
+
+
+@app.get("/assistant/health")
+def executive_assistant_health_get(request: Request):
+    _check_token(request)
+    return {
+        "status": "ok",
+        "assistant": "Executive Assistant",
+        "version": EXECUTIVE_ASSISTANT_VERSION,
+        "enabled": ENABLE_EXECUTIVE_ASSISTANT,
+        "uses": [
+            "AI_OS Orchestrator",
+            "SRV-001 Knowledge Evolution Engine",
+            "Assistant Command Mode",
+        ],
+        "rollback": "ENABLE_EXECUTIVE_ASSISTANT=false",
+        "time_utc": _now_iso(),
+    }
+
+
+@app.get("/assistant")
+async def executive_assistant_get(
+    request: Request,
+    message: str,
+    limit: int = 5,
+    debug: bool = False,
+    write_result: bool = False,
+    result_title: Optional[str] = None,
+    project_id: str = "AI_OS",
+):
+    _check_token(request)
+    return await _executive_assistant_run(ExecutiveAssistantRequest(
+        message=message,
+        limit=limit,
+        debug=debug,
+        write_result=write_result,
+        result_title=result_title,
+        project_id=project_id,
+    ))
+
+
+@app.post("/assistant")
+async def executive_assistant_post(request: Request, payload: ExecutiveAssistantRequest):
+    _check_token(request)
+    return await _executive_assistant_run(payload)
 
 
 @app.get("/orchestrator/knowledge-evolution")
@@ -3198,6 +3341,8 @@ def orchestrator_health_get(request: Request):
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
         "knowledge_evolution_engine": "enabled" if ENABLE_KNOWLEDGE_EVOLUTION_ENGINE else "disabled",
         "knowledge_evolution_engine_version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
+        "executive_assistant": "enabled" if ENABLE_EXECUTIVE_ASSISTANT else "disabled",
+        "executive_assistant_version": EXECUTIVE_ASSISTANT_VERSION,
         **status,
         **master_state_status,
         # Backward compatibility with earlier health checks:
