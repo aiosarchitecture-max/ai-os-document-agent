@@ -1054,7 +1054,7 @@ def root():
     return {
         "service": APP_NAME,
         "status": "running",
-        "message": "AI_OS Orchestrator v1.3.5 is online. Knowledge Retrieval is enabled for /orchestrator/ask.",
+        "message": "AI_OS Orchestrator v1.3.7 is online. Knowledge Retrieval and SRV-001 Knowledge Evolution are enabled for /orchestrator/ask.",
     }
 
 
@@ -1553,6 +1553,9 @@ MAX_CHARS_PER_RETRIEVAL_SNIPPET = int(os.getenv("MAX_CHARS_PER_RETRIEVAL_SNIPPET
 MIN_RELEVANCE_SCORE = float(os.getenv("MIN_RELEVANCE_SCORE", "0.25"))
 KNOWLEDGE_RETRIEVAL_PIPELINE_VERSION = "1.3.5.4-compact-debug-output"
 ASSISTANT_COMMAND_MODE_VERSION = "1.3.6-assistant-command-mode"
+KNOWLEDGE_EVOLUTION_ENGINE_VERSION = "1.3.7-knowledge-evolution-engine"
+ENABLE_KNOWLEDGE_EVOLUTION_ENGINE = os.getenv("ENABLE_KNOWLEDGE_EVOLUTION_ENGINE", "true").strip().lower() not in {"0", "false", "no", "off"}
+KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE = float(os.getenv("KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE", "0.35"))
 ENABLE_ASSISTANT_COMMAND_MODE = os.getenv("ENABLE_ASSISTANT_COMMAND_MODE", "true").strip().lower() not in ("0", "false", "no", "off")
 ASSISTANT_MAX_ANSWER_CHARS = int(os.getenv("ASSISTANT_MAX_ANSWER_CHARS", "5000"))
 AI_PROMPT_MAX_CHARS = int(os.getenv("AI_PROMPT_MAX_CHARS", "9000"))
@@ -2299,6 +2302,8 @@ def _build_legacy_single_document_context(message: str, limit: int = 5) -> Dict[
         "working_context": working_context,
         "knowledge_retrieval_used": False,
         "knowledge_retrieval": None,
+        "knowledge_evolution": _knowledge_evolution_decision(message, None),
+        "knowledge_evolution_used": ENABLE_KNOWLEDGE_EVOLUTION_ENGINE,
         "knowledge_retrieval_error": None,
         "working_context_error": working_context_error,
         "index_status": search_result.get("index_status"),
@@ -2344,6 +2349,8 @@ def _orchestrator_build_context(message: str, limit: int = 5) -> Dict[str, Any]:
             },
             "knowledge_retrieval_used": True,
             "knowledge_retrieval": kr,
+            "knowledge_evolution": _knowledge_evolution_decision(message, kr),
+            "knowledge_evolution_used": ENABLE_KNOWLEDGE_EVOLUTION_ENGINE,
             "knowledge_retrieval_error": None,
             "working_context_error": None,
             "index_status": kr.get("index_status"),
@@ -2417,6 +2424,14 @@ def _orchestrator_context_text(context: Dict[str, Any]) -> str:
             if item.get("snippet"):
                 lines.append(f"Úryvok: {item.get('snippet')}")
 
+    ke = context.get("knowledge_evolution") or {}
+    if ke:
+        lines.append("\n=== SRV-001 Knowledge Evolution Engine ===")
+        lines.append(f"Rozhodnutie: {ke.get('decision')}")
+        lines.append(f"Istota: {ke.get('confidence')} ({ke.get('confidence_level')})")
+        lines.append(f"Dôvod: {ke.get('reason')}")
+        lines.append(f"Odporúčaná akcia: {ke.get('recommended_action')}")
+
     if context.get("knowledge_retrieval_error"):
         lines.append("\n=== Knowledge Retrieval fallback ===")
         lines.append(f"Chyba: {context.get('knowledge_retrieval_error')}")
@@ -2430,6 +2445,176 @@ def _truncate_text(value: Any, max_chars: int) -> str:
         return text
     return text[:max_chars].rstrip() + "\n\n[TRUNCATED_FOR_MEMORY_SAFETY]"
 
+
+
+# -----------------------------------------------------------------------------
+# AI_OS v1.3.7 — SRV-001 Knowledge Evolution Engine
+# -----------------------------------------------------------------------------
+# Shared Service: determines whether new information should REUSE, MERGE,
+# UPDATE, ARCHIVE, REMOVE or CREATE NEW. v1.3.7 is read-only and debug-visible.
+
+KNOWLEDGE_EVOLUTION_DECISIONS = {"REUSE", "MERGE", "UPDATE", "ARCHIVE", "REMOVE", "CREATE NEW"}
+
+
+def _knowledge_evolution_config() -> Dict[str, Any]:
+    return {
+        "enabled": ENABLE_KNOWLEDGE_EVOLUTION_ENGINE,
+        "service_id": "SRV-001",
+        "service_name": "Knowledge Evolution Engine",
+        "version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
+        "min_confidence": KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE,
+        "decision_order": ["REUSE", "MERGE", "UPDATE", "ARCHIVE", "REMOVE", "CREATE NEW"],
+    }
+
+
+def _safe_float(value: Any, default: float = 0.0) -> float:
+    try:
+        if value is None:
+            return default
+        return float(value)
+    except Exception:
+        return default
+
+
+def _message_intent_flags(message: str) -> Dict[str, bool]:
+    normalized = _normalize_text(message or "")
+    return {
+        "asks_update": any(word in normalized for word in ["aktualiz", "uprav", "dopln", "zmen", "update", "edit"]),
+        "asks_merge": any(word in normalized for word in ["zluc", "spoj", "konsolid", "merge", "consolidat"]),
+        "asks_archive": any(word in normalized for word in ["archiv", "odloz", "archive"]),
+        "asks_remove": any(word in normalized for word in ["odstran", "vymaz", "zmaz", "delete", "remove"]),
+        "asks_create": any(word in normalized for word in ["vytvor", "novy", "novu", "create", "new"]),
+    }
+
+
+def _top_document_scores(kr: Optional[Dict[str, Any]]) -> List[float]:
+    if not kr:
+        return []
+    scores: List[float] = []
+    for doc in (kr.get("used_documents") or []):
+        scores.append(_safe_float(doc.get("relevance_score"), 0.0))
+    return sorted(scores, reverse=True)
+
+
+def _knowledge_evolution_decision(message: str, kr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    cfg = _knowledge_evolution_config()
+    base: Dict[str, Any] = {
+        "service_id": "SRV-001",
+        "service_name": "Knowledge Evolution Engine",
+        "version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
+        "enabled": ENABLE_KNOWLEDGE_EVOLUTION_ENGINE,
+        "decision": "DISABLED" if not ENABLE_KNOWLEDGE_EVOLUTION_ENGINE else "CREATE NEW",
+        "confidence": 0.0,
+        "confidence_level": "none",
+        "reason": "ENABLE_KNOWLEDGE_EVOLUTION_ENGINE=false" if not ENABLE_KNOWLEDGE_EVOLUTION_ENGINE else "No relevant existing knowledge found.",
+        "recommended_action": "No knowledge evolution action." if not ENABLE_KNOWLEDGE_EVOLUTION_ENGINE else "Create new knowledge only after confirmation.",
+        "candidate_count": 0,
+        "top_score": 0.0,
+        "used_document_count": 0,
+        "flags": _message_intent_flags(message),
+        "decision_order": cfg["decision_order"],
+        "safe_mode": True,
+        "writes_enabled": False,
+    }
+    if not ENABLE_KNOWLEDGE_EVOLUTION_ENGINE:
+        return base
+
+    kr = kr or {}
+    used_docs = kr.get("used_documents") or []
+    scores = _top_document_scores(kr)
+    top_score = scores[0] if scores else 0.0
+    second_score = scores[1] if len(scores) > 1 else 0.0
+    candidate_count = int(kr.get("candidate_count") or len(used_docs) or 0)
+    used_count = int(kr.get("used_document_count") or len(used_docs) or 0)
+    flags = base["flags"]
+
+    confidence = min(1.0, max(0.0, (top_score * 0.75) + (min(used_count, 5) / 5.0 * 0.25)))
+    if confidence >= 0.75:
+        level = "high"
+    elif confidence >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        level = "medium"
+    elif confidence > 0:
+        level = "low"
+    else:
+        level = "none"
+
+    decision = "CREATE NEW"
+    reason = "No relevant existing knowledge found."
+    action = "Create new knowledge only after confirmation."
+
+    if flags.get("asks_remove") and top_score >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        decision = "REMOVE"
+        reason = "User appears to request removal and matching knowledge exists."
+        action = "Prepare removal proposal. Do not delete without explicit approval."
+    elif flags.get("asks_archive") and top_score >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        decision = "ARCHIVE"
+        reason = "User appears to request archival and matching knowledge exists."
+        action = "Prepare archival proposal. Do not archive without approval."
+    elif flags.get("asks_merge") and used_count >= 2 and second_score >= (KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE * 0.8):
+        decision = "MERGE"
+        reason = "Multiple related knowledge sources found and user intent suggests consolidation."
+        action = "Prepare merge plan and identify source of truth."
+    elif flags.get("asks_update") and top_score >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        decision = "UPDATE"
+        reason = "Existing relevant knowledge found and user intent suggests update."
+        action = "Prepare update proposal for existing source of truth."
+    elif top_score >= max(0.60, KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE) and not flags.get("asks_create"):
+        decision = "REUSE"
+        reason = "Strong relevant existing knowledge found."
+        action = "Reuse existing knowledge in working context."
+    elif used_count >= 2 and second_score >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        decision = "MERGE"
+        reason = "Multiple related sources found; consolidation may be needed."
+        action = "Use multiple sources and flag possible consolidation."
+    elif top_score >= KNOWLEDGE_EVOLUTION_MIN_CONFIDENCE:
+        decision = "UPDATE" if flags.get("asks_create") else "REUSE"
+        reason = "Relevant existing knowledge exists, but confidence is not high enough for automatic final action."
+        action = "Use existing knowledge as baseline and ask for confirmation before creating new content."
+
+    base.update({
+        "decision": decision,
+        "confidence": round(confidence, 3),
+        "confidence_level": level,
+        "reason": reason,
+        "recommended_action": action,
+        "candidate_count": candidate_count,
+        "top_score": round(top_score, 3),
+        "second_score": round(second_score, 3),
+        "used_document_count": used_count,
+        "related_documents": [
+            {
+                "document_name": doc.get("document_name"),
+                "document_id": doc.get("document_id"),
+                "document_url": doc.get("document_url"),
+                "relevance_score": doc.get("relevance_score"),
+                "matched_keywords": (doc.get("matched_keywords") or [])[:8],
+            }
+            for doc in used_docs[:6]
+        ],
+    })
+    return base
+
+
+def _compact_knowledge_evolution_for_debug(ke: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not ke:
+        return None
+    return {
+        "service_id": ke.get("service_id"),
+        "version": ke.get("version"),
+        "enabled": ke.get("enabled"),
+        "decision": ke.get("decision"),
+        "confidence": ke.get("confidence"),
+        "confidence_level": ke.get("confidence_level"),
+        "reason": ke.get("reason"),
+        "recommended_action": ke.get("recommended_action"),
+        "candidate_count": ke.get("candidate_count"),
+        "top_score": ke.get("top_score"),
+        "used_document_count": ke.get("used_document_count"),
+        "flags": ke.get("flags"),
+        "related_documents": (ke.get("related_documents") or [])[:4],
+        "safe_mode": ke.get("safe_mode"),
+        "writes_enabled": ke.get("writes_enabled"),
+    }
 
 def _assistant_command_instruction() -> str:
     return (
@@ -2617,6 +2802,8 @@ def _debug_payload_compact(payload: Dict[str, Any]) -> Dict[str, Any]:
         "context_mode": payload.get("context_mode"),
         "knowledge_retrieval_used": payload.get("knowledge_retrieval_used"),
         "knowledge_retrieval": payload.get("knowledge_retrieval"),
+        "knowledge_evolution": payload.get("knowledge_evolution"),
+        "knowledge_evolution_used": payload.get("knowledge_evolution_used"),
         "knowledge_retrieval_error": payload.get("knowledge_retrieval_error"),
         "working_context_used": payload.get("working_context_used"),
         "working_context": payload.get("working_context"),
@@ -2945,7 +3132,7 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         }
 
     debug_payload = {
-        "version": "1.3.6",
+        "version": "1.3.7",
         "service": APP_NAME,
         "assistant_command_mode": assistant_mode_enabled,
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
@@ -2958,6 +3145,8 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
         "context_mode": context.get("mode"),
         "knowledge_retrieval_used": context.get("knowledge_retrieval_used", False),
         "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(context.get("knowledge_retrieval")),
+        "knowledge_evolution": _compact_knowledge_evolution_for_debug(context.get("knowledge_evolution")),
+        "knowledge_evolution_used": context.get("knowledge_evolution_used", False),
         "knowledge_retrieval_error": context.get("knowledge_retrieval_error"),
         "working_context_used": context.get("working_context_used", False),
         "working_context": _compact_working_context_for_debug(context.get("working_context")),
@@ -2975,6 +3164,27 @@ async def _orchestrate(payload: OrchestratorRequest) -> Dict[str, Any]:
     }
 
 
+
+@app.get("/orchestrator/knowledge-evolution")
+def orchestrator_knowledge_evolution_get(
+    request: Request,
+    message: str,
+    limit: int = 5,
+):
+    _check_token(request)
+    if not message or not message.strip():
+        raise HTTPException(status_code=400, detail="message is required.")
+    safe_limit = max(1, min(int(limit or 5), 12))
+    kr = _build_knowledge_retrieval_context(message=message.strip(), limit=safe_limit) if ENABLE_KNOWLEDGE_RETRIEVAL else None
+    ke = _knowledge_evolution_decision(message.strip(), kr)
+    return {
+        "status": "success",
+        "service": "SRV-001 Knowledge Evolution Engine",
+        "knowledge_evolution": _compact_knowledge_evolution_for_debug(ke),
+        "knowledge_retrieval": _compact_knowledge_retrieval_for_debug(kr),
+        "time_utc": _now_iso(),
+    }
+
 @app.get("/orchestrator/health")
 def orchestrator_health_get(request: Request):
     _check_token(request)
@@ -2986,6 +3196,8 @@ def orchestrator_health_get(request: Request):
         "orchestrator": "enabled",
         "assistant_command_mode": "enabled" if ENABLE_ASSISTANT_COMMAND_MODE else "disabled",
         "assistant_command_mode_version": ASSISTANT_COMMAND_MODE_VERSION,
+        "knowledge_evolution_engine": "enabled" if ENABLE_KNOWLEDGE_EVOLUTION_ENGINE else "disabled",
+        "knowledge_evolution_engine_version": KNOWLEDGE_EVOLUTION_ENGINE_VERSION,
         **status,
         **master_state_status,
         # Backward compatibility with earlier health checks:
