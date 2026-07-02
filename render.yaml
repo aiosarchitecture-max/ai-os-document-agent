@@ -12,11 +12,7 @@ services:
         value: "true"
       - key: ENABLE_CAPABILITY_RUNTIME
         value: "true"
-      - key: ENABLE_KNOWLEDGE_EVOLUTION
-        value: "true"
       - key: ENABLE_DOCUMENT_AGENT
         value: "true"
       - key: ENABLE_GOOGLE_DOCS_WRITE
         value: "true"
-      - key: ENABLE_DRIVE_REFRESH
-        value: "false"
