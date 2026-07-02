@@ -1,7 +1,20 @@
 services:
-- type: web
-  name: ai-os-document-agent
-  env: python
-  plan: free
-  buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-  startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+  - type: web
+    name: ai-os-document-agent
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: ENABLE_EXECUTIVE_ASSISTANT
+        value: "true"
+      - key: ENABLE_CAPABILITY_RUNTIME
+        value: "true"
+      - key: ENABLE_KNOWLEDGE_EVOLUTION
+        value: "true"
+      - key: ENABLE_DOCUMENT_AGENT
+        value: "false"
+      - key: ENABLE_DRIVE_REFRESH
+        value: "false"
