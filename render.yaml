@@ -8,11 +8,3 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: 3.11.9
-      - key: ENABLE_EXECUTIVE_ASSISTANT
-        value: "true"
-      - key: ENABLE_CAPABILITY_RUNTIME
-        value: "true"
-      - key: ENABLE_DOCUMENT_AGENT
-        value: "true"
-      - key: ENABLE_GOOGLE_DOCS_WRITE
-        value: "true"
