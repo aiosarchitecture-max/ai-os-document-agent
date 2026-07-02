@@ -15,6 +15,10 @@ services:
       - key: ENABLE_KNOWLEDGE_EVOLUTION
         value: "true"
       - key: ENABLE_DOCUMENT_AGENT
-        value: "false"
+        value: "true"
       - key: ENABLE_DRIVE_REFRESH
         value: "false"
+      - key: DOCUMENT_AGENT_CREATE_PATH
+        value: "/document/create"
+      - key: DOCUMENT_AGENT_TIMEOUT_SECONDS
+        value: "20"
