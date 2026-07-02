@@ -16,9 +16,7 @@ services:
         value: "true"
       - key: ENABLE_DOCUMENT_AGENT
         value: "true"
+      - key: ENABLE_GOOGLE_DOCS_WRITE
+        value: "true"
       - key: ENABLE_DRIVE_REFRESH
         value: "false"
-      - key: DOCUMENT_AGENT_CREATE_PATH
-        value: "/document/create"
-      - key: DOCUMENT_AGENT_TIMEOUT_SECONDS
-        value: "20"
