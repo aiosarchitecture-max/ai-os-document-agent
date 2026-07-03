@@ -8,8 +8,8 @@ import requests
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_8_CAP0044_INTELLIGENT_DOCUMENT_MANAGEMENT"
-VERSION = "1.4.8-cap0044-intelligent-document-management"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_9_CAP0045_CONTEXT_AWARE_DOCUMENT_ORCHESTRATION"
+VERSION = "1.4.9-cap0045-context-aware-document-orchestration"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
@@ -19,7 +19,6 @@ REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "45"))
 DEBUG_APPS_SCRIPT = os.getenv("DEBUG_APPS_SCRIPT", "false").strip().lower() in {"1", "true", "yes", "on"}
 
 app = FastAPI(title=APP_NAME, version=VERSION)
-
 
 # -----------------------------------------------------------------------------
 # Core helpers
@@ -55,15 +54,9 @@ def safe_error(e: Exception, rid: str) -> JSONResponse:
 def check_token(request: Request) -> None:
     if not API_TOKEN:
         raise HTTPException(status_code=503, detail="API_TOKEN is not configured")
-
     auth = request.headers.get("authorization", "").strip()
     bearer = auth.replace("Bearer ", "", 1).strip() if auth.lower().startswith("bearer ") else ""
-    supplied = (
-        request.query_params.get("token", "").strip()
-        or request.headers.get("x-api-token", "").strip()
-        or bearer
-    )
-
+    supplied = request.query_params.get("token", "").strip() or request.headers.get("x-api-token", "").strip() or bearer
     if supplied != API_TOKEN:
         raise HTTPException(status_code=401, detail="Unauthorized")
 
@@ -75,7 +68,7 @@ def public_config() -> Dict[str, Any]:
         "apps_script_webapp_url_configured": bool(APPS_SCRIPT_WEBAPP_URL),
         "apps_script_secret_configured": bool(APPS_SCRIPT_SECRET),
         "write_mode": "APPS_SCRIPT_OWNER_CONTEXT",
-        "capability": "CAP-004.4 Intelligent Document Management",
+        "capability": "CAP-004.5 Context-Aware Document Orchestration",
     }
 
 
@@ -83,64 +76,48 @@ def _strip_quotes(text: str) -> str:
     return (text or "").strip().strip('"“”„').strip("'‘’").strip()
 
 
-def _first_nonempty(*values: Optional[str]) -> str:
-    for value in values:
-        if value and str(value).strip():
-            return str(value).strip()
-    return ""
-
-
 def _safe_title(title: str) -> str:
     clean = re.sub(r"\s+", " ", _strip_quotes(title))
     return (clean or "AI_OS Document")[:120]
+
+
+def _safe_content(content: str) -> str:
+    return str(content or "").replace("\r\n", "\n").replace("\r", "\n")[:90000]
+
+
+def _bool(value: Any, default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in {"1", "true", "yes", "áno", "ano", "on"}
+
+
+def _int(value: Any, default: int, min_value: int, max_value: int) -> int:
+    try:
+        parsed = int(value)
+    except Exception:
+        parsed = default
+    return max(min_value, min(max_value, parsed))
+
+
+def parse_title_list(raw: Any) -> List[str]:
+    if isinstance(raw, list):
+        return [_safe_title(str(x)) for x in raw if str(x).strip()]
+    text = str(raw or "").strip()
+    if not text:
+        return []
+    parts = re.split(r"\s*(?:,|;|\|)\s*", text)
+    return [_safe_title(p) for p in parts if p.strip()]
 
 
 # -----------------------------------------------------------------------------
 # Intent parsing
 # -----------------------------------------------------------------------------
 
-def extract_title_from_create(message: str) -> str:
-    text = (message or "").strip()
-    low = text.lower()
-    prefixes = [
-        "vytvor nový dokument",
-        "vytvor dokument",
-        "nový dokument",
-        "create document",
-        "create doc",
-    ]
-    for p in prefixes:
-        if low.startswith(p):
-            text = text[len(p):].strip(" :-–—")
-            break
-
-    # Remove optional trailing content directive from title.
-    splitters = [" s textom ", " textom ", " obsahom ", " s obsahom "]
-    lowered = text.lower()
-    for marker in splitters:
-        idx = lowered.find(marker)
-        if idx > 0:
-            text = text[:idx]
-            break
-    return _safe_title(text)
-
-
-def extract_content_from_create(message: str, title: str, rid: str) -> str:
-    text = (message or "").strip()
-    lowered = text.lower()
-    markers = [" s textom ", " textom ", " s obsahom ", " obsahom "]
-    for marker in markers:
-        idx = lowered.find(marker)
-        if idx >= 0:
-            return _strip_quotes(text[idx + len(marker):]) or make_default_content(title, message, rid)
-    return make_default_content(title, message, rid)
-
-
 def make_default_content(title: str, message: str, rid: str) -> str:
     return f"""# {title}
 
 Status: DRAFT
-Created by: AI_OS v1.4.8 CAP-004.4 Intelligent Document Management
+Created by: AI_OS v1.4.9 CAP-004.5 Context-Aware Document Orchestration
 Request ID: {rid}
 Created at: {utc_now()}
 
@@ -150,13 +127,47 @@ Created at: {utc_now()}
 
 ## Technický režim
 
-Zápis a správa dokumentu idú cez CAP-004.4 a Apps Script Web App spustený ako vlastník Google Drive.
+Zápis a správa dokumentu idú cez CAP-004.5, Apps Script Web App a owner-context Google Drive zápis.
 """
+
+
+def _split_title_content(text: str, default_title: str = "") -> Tuple[str, str]:
+    body = (text or "").strip()
+    lowered = body.lower()
+    markers = [" s textom ", " textom ", " s obsahom ", " obsahom ", " content "]
+    for marker in markers:
+        idx = lowered.find(marker)
+        if idx >= 0:
+            return _safe_title(body[:idx] or default_title), _strip_quotes(body[idx + len(marker):])
+    return _safe_title(body or default_title), ""
+
+
+def extract_title_from_create(message: str) -> str:
+    text = (message or "").strip()
+    low = text.lower()
+    prefixes = ["vytvor nový dokument", "vytvor dokument", "nový dokument", "create document", "create doc"]
+    for p in prefixes:
+        if low.startswith(p):
+            text = text[len(p):].strip(" :-–—")
+            break
+    title, _ = _split_title_content(text, "AI_OS Document")
+    return title
+
+
+def extract_content_from_create(message: str, title: str, rid: str) -> str:
+    text = (message or "").strip()
+    low = text.lower()
+    prefixes = ["vytvor nový dokument", "vytvor dokument", "nový dokument", "create document", "create doc"]
+    for p in prefixes:
+        if low.startswith(p):
+            text = text[len(p):].strip(" :-–—")
+            break
+    _, content = _split_title_content(text, title)
+    return _safe_content(content or make_default_content(title, message, rid))
 
 
 def parse_append_command(message: str) -> Tuple[str, str]:
     text = (message or "").strip()
-    # Supported: "Dopíš do dokumentu X text Y"
     patterns = [
         r"(?is)^\s*dopíš\s+do\s+dokumentu\s+(.+?)\s+(?:text|obsah)\s+(.+)$",
         r"(?is)^\s*dopis\s+do\s+dokumentu\s+(.+?)\s+(?:text|obsah)\s+(.+)$",
@@ -165,23 +176,57 @@ def parse_append_command(message: str) -> Tuple[str, str]:
     for pattern in patterns:
         m = re.match(pattern, text)
         if m:
-            return _safe_title(m.group(1)), _strip_quotes(m.group(2))
+            return _safe_title(m.group(1)), _safe_content(_strip_quotes(m.group(2)))
+
+    # CAP-004.5 active-document syntax: "Dopíš text X" / "Dopíš obsah X"
+    patterns_active = [
+        r"(?is)^\s*dopíš\s+(?:text|obsah)\s+(.+)$",
+        r"(?is)^\s*dopis\s+(?:text|obsah)\s+(.+)$",
+        r"(?is)^\s*append\s+text\s+(.+)$",
+    ]
+    for pattern in patterns_active:
+        m = re.match(pattern, text)
+        if m:
+            return "", _safe_content(_strip_quotes(m.group(1)))
     return "", ""
 
 
 def parse_update_command(message: str) -> Tuple[str, str, str]:
     text = (message or "").strip()
-    # Supported: "Uprav v dokumente X nahraď A za B"
     patterns = [
         r"(?is)^\s*uprav\s+v\s+dokumente\s+(.+?)\s+nahraď\s+(.+?)\s+za\s+(.+)$",
         r"(?is)^\s*uprav\s+v\s+dokumente\s+(.+?)\s+nahrad\s+(.+?)\s+za\s+(.+)$",
         r"(?is)^\s*aktualizuj\s+dokument\s+(.+?)\s+nahraď\s+(.+?)\s+za\s+(.+)$",
+        r"(?is)^\s*aktualizuj\s+dokument\s+(.+?)\s+nahrad\s+(.+?)\s+za\s+(.+)$",
         r"(?is)^\s*update\s+document\s+(.+?)\s+replace\s+(.+?)\s+with\s+(.+)$",
     ]
     for pattern in patterns:
         m = re.match(pattern, text)
         if m:
             return _safe_title(m.group(1)), _strip_quotes(m.group(2)), _strip_quotes(m.group(3))
+
+    # Active-document syntax: "Nahraď A za B"
+    patterns_active = [r"(?is)^\s*nahraď\s+(.+?)\s+za\s+(.+)$", r"(?is)^\s*nahrad\s+(.+?)\s+za\s+(.+)$"]
+    for pattern in patterns_active:
+        m = re.match(pattern, text)
+        if m:
+            return "", _strip_quotes(m.group(1)), _strip_quotes(m.group(2))
+    return "", "", ""
+
+
+def parse_smart_write_command(message: str) -> Tuple[str, str, str]:
+    text = (message or "").strip()
+    patterns = [
+        r"(?is)^\s*(?:zapíš|zapis|ulož|uloz)\s+do\s+dokumentu\s+(.+?)\s+(?:text|obsah)\s+(.+)$",
+        r"(?is)^\s*smart\s+(?:write|zapíš|zapis)\s+(.+?)\s+(?:text|obsah)\s+(.+)$",
+        r"(?is)^\s*(?:zapíš|zapis|ulož|uloz)\s+(?:text|obsah)\s+(.+)$",
+    ]
+    for i, pattern in enumerate(patterns):
+        m = re.match(pattern, text)
+        if m and i < 2:
+            return _safe_title(m.group(1)), _safe_content(_strip_quotes(m.group(2))), "AUTO_APPEND_OR_CREATE"
+        if m and i == 2:
+            return "", _safe_content(_strip_quotes(m.group(1))), "AUTO_ACTIVE_OR_CREATE"
     return "", "", ""
 
 
@@ -196,11 +241,23 @@ def parse_title_after_keywords(message: str, keywords: List[str]) -> str:
 
 def intent_router(message: str) -> Dict[str, Any]:
     m = (message or "").lower().strip()
-    if any(x in m for x in ["dopíš do dokumentu", "dopis do dokumentu", "append to document"]):
+    if any(x in m for x in ["zoznam dokumentov", "posledné dokumenty", "posledne dokumenty", "list documents", "recent documents"]):
+        return {"intent": "document_list", "capability_id": "CAP-004.5", "confidence": 0.95}
+    if any(x in m for x in ["aktívny dokument", "aktivny dokument", "current document", "active document"]):
+        return {"intent": "document_active_get", "capability_id": "CAP-004.5", "confidence": 0.92}
+    if any(x in m for x in ["pracuj s dokumentom", "nastav aktívny dokument", "nastav aktivny dokument", "set active document"]):
+        return {"intent": "document_active_set", "capability_id": "CAP-004.5", "confidence": 0.95}
+    if any(x in m for x in ["zálohuj dokument", "zalohuj dokument", "backup document"]):
+        return {"intent": "document_backup", "capability_id": "CAP-004.5", "confidence": 0.95}
+    if any(x in m for x in ["história zmien", "historia zmien", "change log", "changelog"]):
+        return {"intent": "document_changelog", "capability_id": "CAP-004.5", "confidence": 0.91}
+    if any(x in m for x in ["zapíš do dokumentu", "zapis do dokumentu", "ulož do dokumentu", "uloz do dokumentu", "smart write"]):
+        return {"intent": "document_smart_write", "capability_id": "CAP-004.5", "confidence": 0.96}
+    if any(x in m for x in ["dopíš do dokumentu", "dopis do dokumentu", "append to document", "dopíš text", "dopis text"]):
         return {"intent": "document_append", "capability_id": "CAP-004.4", "confidence": 0.96}
-    if any(x in m for x in ["uprav v dokumente", "aktualizuj dokument", "replace"]):
+    if any(x in m for x in ["uprav v dokumente", "aktualizuj dokument", "nahraď", "nahrad", "replace"]):
         return {"intent": "document_update", "capability_id": "CAP-004.4", "confidence": 0.94}
-    if any(x in m for x in ["prečítaj dokument", "precitaj dokument", "read document"]):
+    if any(x in m for x in ["prečítaj dokument", "precitaj dokument", "read document", "prečítaj posledný", "precitaj posledny"]):
         return {"intent": "document_read", "capability_id": "CAP-004.4", "confidence": 0.94}
     if any(x in m for x in ["nájdi dokument", "najdi dokument", "find document"]):
         return {"intent": "document_find", "capability_id": "CAP-004.4", "confidence": 0.94}
@@ -214,24 +271,30 @@ def intent_router(message: str) -> Dict[str, Any]:
 def knowledge_decision(message: str) -> Dict[str, Any]:
     route = intent_router(message)
     intent = route["intent"]
-    if intent == "document_create":
+    if intent == "document_smart_write":
+        decision = "AUTO ROUTE"
+        reason = "CAP-004.5 rozhodne, či použiť aktívny/existujúci dokument alebo vytvoriť nový."
+    elif intent in {"document_create"}:
         decision = "CREATE NEW"
         reason = "Požiadavka smeruje k vytvoreniu nového dokumentu."
-    elif intent == "document_find":
+    elif intent in {"document_find", "document_read", "document_list", "document_active_get", "document_changelog"}:
         decision = "REUSE"
-        reason = "Požiadavka smeruje k nájdeniu existujúceho dokumentu."
-    elif intent in {"document_read", "document_append", "document_update"}:
-        decision = "UPDATE" if intent in {"document_append", "document_update"} else "REUSE"
-        reason = "Požiadavka smeruje k práci s existujúcim dokumentom."
+        reason = "Požiadavka smeruje k použitiu alebo čítaniu existujúcich znalostí."
+    elif intent in {"document_append", "document_update", "document_active_set"}:
+        decision = "UPDATE"
+        reason = "Požiadavka smeruje k úprave alebo nastaveniu pracovného kontextu."
+    elif intent == "document_backup":
+        decision = "ARCHIVE"
+        reason = "Požiadavka smeruje k bezpečnostnej zálohe dokumentu."
     else:
         decision = "REUSE"
         reason = "Predvolený režim: najprv opätovne použiť existujúce znalosti."
     return {
         "service": "SRV-001 Knowledge Evolution Engine",
         "decision": decision,
-        "confidence": 0.88,
+        "confidence": route.get("confidence", 0.8),
         "reason": reason,
-        "allowed_actions": ["FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE NEW"],
+        "allowed_actions": ["FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE NEW", "SMART_WRITE", "BACKUP", "LOG"],
     }
 
 
@@ -273,7 +336,6 @@ def _parse_apps_script_response(r: requests.Response, rid: str) -> Dict[str, Any
         data.setdefault("final_url", r.url)
         data.setdefault("request_id", rid)
         return data
-
     return {"status": "error", "code": "APPS_SCRIPT_RESPONSE_NOT_OBJECT", "response": data, "request_id": rid}
 
 
@@ -294,21 +356,11 @@ def call_apps_script_action(action: str, rid: str, **kwargs: Any) -> Dict[str, A
     payload.update({k: v for k, v in kwargs.items() if v is not None})
 
     try:
-        first = requests.post(
-            APPS_SCRIPT_WEBAPP_URL,
-            json=payload,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-            allow_redirects=False,
-        )
-
+        first = requests.post(APPS_SCRIPT_WEBAPP_URL, json=payload, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=False)
         redirect_statuses = {301, 302, 303, 307, 308}
         if first.status_code in redirect_statuses and first.headers.get("Location"):
             redirect_url = first.headers["Location"]
-            second = requests.get(
-                redirect_url,
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                allow_redirects=True,
-            )
+            second = requests.get(redirect_url, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
             result = _parse_apps_script_response(second, rid)
             result.setdefault("redirect_handled", True)
             result.setdefault("redirect_follow_method", "GET")
@@ -335,19 +387,24 @@ def call_apps_script_action(action: str, rid: str, **kwargs: Any) -> Dict[str, A
             print("RESULT STATUS:", result.get("status"))
             print("=============================")
         return result
-
     except requests.Timeout:
         return {"status": "error", "code": "APPS_SCRIPT_TIMEOUT", "timeout_seconds": REQUEST_TIMEOUT_SECONDS, "request_id": rid}
     except Exception as e:
         return {"status": "error", "code": e.__class__.__name__, "details": str(e)[:2500], "request_id": rid}
 
 
+# Document wrappers
+
 def create_document(title: str, content: str, rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
-    return call_apps_script_action("CREATE_DOC", rid, title=_safe_title(title), content=content, folder_id=folder_id)
+    return call_apps_script_action("CREATE_DOC", rid, title=_safe_title(title), content=_safe_content(content), folder_id=folder_id)
 
 
 def find_document(title: str, rid: str, folder_id: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
-    return call_apps_script_action("FIND_DOC", rid, title=_safe_title(title), folder_id=folder_id, limit=max(1, min(limit, 20)))
+    return call_apps_script_action("FIND_DOC", rid, title=_safe_title(title), folder_id=folder_id, limit=max(1, min(limit, 50)))
+
+
+def list_documents(rid: str, query: str = "", folder_id: Optional[str] = None, limit: int = 10) -> Dict[str, Any]:
+    return call_apps_script_action("LIST_DOCS", rid, query=_strip_quotes(query), folder_id=folder_id, limit=max(1, min(limit, 50)))
 
 
 def read_document(title: Optional[str], rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, Any]:
@@ -355,19 +412,35 @@ def read_document(title: Optional[str], rid: str, document_id: Optional[str] = N
 
 
 def append_document(title: Optional[str], content: str, rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, Any]:
-    return call_apps_script_action("APPEND_DOC", rid, title=_safe_title(title or ""), document_id=document_id, content=content, folder_id=folder_id)
+    return call_apps_script_action("APPEND_DOC", rid, title=_safe_title(title or ""), document_id=document_id, content=_safe_content(content), folder_id=folder_id)
 
 
-def update_document(title: Optional[str], find_text: str, replace_text: str, rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, Any]:
-    return call_apps_script_action(
-        "UPDATE_DOC",
-        rid,
-        title=_safe_title(title or ""),
-        document_id=document_id,
-        find_text=find_text,
-        replace_text=replace_text,
-        folder_id=folder_id,
-    )
+def update_document(title: Optional[str], find_text: str, replace_text: str, rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None, backup: bool = True) -> Dict[str, Any]:
+    return call_apps_script_action("UPDATE_DOC", rid, title=_safe_title(title or ""), document_id=document_id, find_text=find_text, replace_text=replace_text, folder_id=folder_id, backup=backup)
+
+
+def smart_write_document(title: Optional[str], content: str, rid: str, mode: str = "AUTO_APPEND_OR_CREATE", folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("SMART_WRITE", rid, title=_safe_title(title or ""), content=_safe_content(content), mode=mode, folder_id=folder_id)
+
+
+def set_active_document(title: Optional[str], rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("SET_ACTIVE_DOC", rid, title=_safe_title(title or ""), document_id=document_id, folder_id=folder_id)
+
+
+def get_active_document(rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("GET_ACTIVE_DOC", rid, folder_id=folder_id)
+
+
+def backup_document(title: Optional[str], rid: str, document_id: Optional[str] = None, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("BACKUP_DOC", rid, title=_safe_title(title or ""), document_id=document_id, folder_id=folder_id)
+
+
+def read_change_log(rid: str, limit_chars: int = 5000, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("READ_CHANGE_LOG", rid, limit_chars=max(1000, min(limit_chars, 20000)), folder_id=folder_id)
+
+
+def read_multiple_documents(titles: List[str], rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("READ_MULTI_DOC", rid, titles=titles[:10], folder_id=folder_id)
 
 
 # -----------------------------------------------------------------------------
@@ -381,22 +454,20 @@ def root_head():
 
 @app.get("/")
 def root():
-    return json_response(
-        {
-            "service": APP_NAME,
-            "status": "running",
-            "version": VERSION,
-            "message": "AI_OS CAP-004.4 Intelligent Document Management is online.",
-            "use": [
-                "/assistant?message=Vytvor%20dokument%20Test%20textom%20Ahoj&token=...",
-                "/assistant?message=Nájdi%20dokument%20Test&token=...",
-                "/assistant?message=Prečítaj%20dokument%20Test&token=...",
-                "/assistant?message=Dopíš%20do%20dokumentu%20Test%20text%20Druhý%20riadok&token=...",
-                "/assistant?message=Uprav%20v%20dokumente%20Test%20nahraď%20Ahoj%20za%20Ahoj%20Daniel&token=...",
-            ],
-            "config": public_config(),
-        }
-    )
+    return json_response({
+        "service": APP_NAME,
+        "status": "running",
+        "version": VERSION,
+        "message": "AI_OS CAP-004.5 Context-Aware Document Orchestration is online.",
+        "use": [
+            "/assistant?token=...&message=Zoznam%20dokumentov",
+            "/assistant?token=...&message=Pracuj%20s%20dokumentom%20Test",
+            "/assistant?token=...&message=Zapíš%20do%20dokumentu%20Test%20text%20Nový%20riadok",
+            "/assistant?token=...&message=Dopíš%20text%20Text%20do%20aktívneho%20dokumentu",
+            "/assistant?token=...&message=História%20zmien",
+        ],
+        "config": public_config(),
+    })
 
 
 @app.get("/orchestrator/health")
@@ -404,20 +475,7 @@ def orchestrator_health(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response(
-            {
-                "status": "ok",
-                "service": APP_NAME,
-                "version": VERSION,
-                "orchestrator": "enabled",
-                "executive_assistant": "enabled",
-                "capability_runtime": "enabled",
-                "document_agent": "enabled",
-                "document_management": "enabled",
-                "write_mode": "apps_script_owner_context",
-                "request_id": rid,
-            }
-        )
+        return json_response({"status": "ok", "service": APP_NAME, "version": VERSION, "orchestrator": "enabled", "document_management": "enabled", "context_aware_orchestration": "enabled", "write_mode": "apps_script_owner_context", "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
@@ -427,22 +485,7 @@ def assistant_health(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response(
-            {
-                "status": "ok",
-                "assistant": "Executive Assistant",
-                "version": VERSION,
-                "uses": [
-                    "CAP-002 Executive Assistant",
-                    "CAP-003 Capability Runtime",
-                    "CAP-004 Document Agent Adapter",
-                    "CAP-004.3 Apps Script Physical Write",
-                    "CAP-004.4 Intelligent Document Management",
-                    "SRV-001 Knowledge Evolution Engine",
-                ],
-                "request_id": rid,
-            }
-        )
+        return json_response({"status": "ok", "assistant": "Executive Assistant", "version": VERSION, "uses": ["CAP-002", "CAP-003", "CAP-004", "CAP-004.3", "CAP-004.4", "CAP-004.5", "SRV-001"], "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
@@ -468,11 +511,16 @@ def self_test(request: Request):
             {"name": "root_folder_id", "status": "PASS" if AI_OS_ROOT_FOLDER_ID else "FAIL"},
             {"name": "apps_script_webapp_url", "status": "PASS" if APPS_SCRIPT_WEBAPP_URL else "FAIL"},
             {"name": "apps_script_secret", "status": "PASS" if APPS_SCRIPT_SECRET else "FAIL"},
-            {"name": "router_create", "status": "PASS" if intent_router("Vytvor dokument Test") ["intent"] == "document_create" else "FAIL"},
-            {"name": "router_find", "status": "PASS" if intent_router("Nájdi dokument Test") ["intent"] == "document_find" else "FAIL"},
-            {"name": "router_read", "status": "PASS" if intent_router("Prečítaj dokument Test") ["intent"] == "document_read" else "FAIL"},
-            {"name": "router_append", "status": "PASS" if intent_router("Dopíš do dokumentu Test text Ahoj") ["intent"] == "document_append" else "FAIL"},
-            {"name": "router_update", "status": "PASS" if intent_router("Uprav v dokumente Test nahraď A za B") ["intent"] == "document_update" else "FAIL"},
+            {"name": "router_create", "status": "PASS" if intent_router("Vytvor dokument Test")["intent"] == "document_create" else "FAIL"},
+            {"name": "router_find", "status": "PASS" if intent_router("Nájdi dokument Test")["intent"] == "document_find" else "FAIL"},
+            {"name": "router_read", "status": "PASS" if intent_router("Prečítaj dokument Test")["intent"] == "document_read" else "FAIL"},
+            {"name": "router_append", "status": "PASS" if intent_router("Dopíš do dokumentu Test text Ahoj")["intent"] == "document_append" else "FAIL"},
+            {"name": "router_update", "status": "PASS" if intent_router("Uprav v dokumente Test nahraď A za B")["intent"] == "document_update" else "FAIL"},
+            {"name": "router_list", "status": "PASS" if intent_router("Zoznam dokumentov")["intent"] == "document_list" else "FAIL"},
+            {"name": "router_smart_write", "status": "PASS" if intent_router("Zapíš do dokumentu Test text Ahoj")["intent"] == "document_smart_write" else "FAIL"},
+            {"name": "router_active", "status": "PASS" if intent_router("Aktívny dokument")["intent"] == "document_active_get" else "FAIL"},
+            {"name": "router_backup", "status": "PASS" if intent_router("Zálohuj dokument Test")["intent"] == "document_backup" else "FAIL"},
+            {"name": "router_changelog", "status": "PASS" if intent_router("História zmien")["intent"] == "document_changelog" else "FAIL"},
         ]
         overall = "PASS" if all(t["status"] == "PASS" for t in tests) else "FAIL"
         return json_response({"status": "success", "self_test": overall, "version": VERSION, "tests": tests, "request_id": rid})
@@ -494,121 +542,191 @@ def assistant(request: Request, message: str = Query(""), debug: bool = Query(Fa
             content = extract_content_from_create(message, title, rid)
             write = create_document(title, content, rid)
             ok = write.get("status") == "success"
-            result = {
-                "status": "success" if ok else "error",
-                "answer": "Dokument bol fyzicky vytvorený v Google Docs." if ok else "Dokument sa nepodarilo vytvoriť.",
-                "next_action": "Otvoriť document.url." if ok else "Skontrolovať Apps Script deployment a APPS_SCRIPT_SECRET.",
-                "document": write.get("document"),
-                "capability_result": write,
-            }
+            result = _assistant_result(ok, "Dokument bol fyzicky vytvorený v Google Docs.", "Dokument sa nepodarilo vytvoriť.", write)
 
         elif intent == "document_find":
             title = parse_title_after_keywords(message, ["nájdi dokument", "najdi dokument", "find document"])
             found = find_document(title, rid)
             ok = found.get("status") == "success"
-            count = found.get("count", 0)
-            result = {
-                "status": "success" if ok else "error",
-                "answer": f"Našiel som {count} dokument(ov)." if ok else "Dokument sa nepodarilo nájsť.",
-                "next_action": "Použi document.id alebo document.url." if ok and count else "Skontroluj názov dokumentu.",
-                "document": found.get("documents", [None])[0] if found.get("documents") else None,
-                "capability_result": found,
-            }
+            result = _assistant_result(ok, f"Našiel som {found.get('count', 0)} dokument(ov).", "Dokument sa nepodarilo nájsť.", found)
 
         elif intent == "document_read":
-            title = parse_title_after_keywords(message, ["prečítaj dokument", "precitaj dokument", "read document"])
+            title = parse_title_after_keywords(message, ["prečítaj dokument", "precitaj dokument", "read document", "prečítaj posledný", "precitaj posledny"])
+            if "posled" in message.lower() or "aktív" in message.lower() or "aktiv" in message.lower():
+                title = ""
             read = read_document(title, rid)
             ok = read.get("status") == "success"
-            result = {
-                "status": "success" if ok else "error",
-                "answer": "Obsah dokumentu bol načítaný." if ok else "Dokument sa nepodarilo načítať.",
-                "next_action": "Skontrolovať document.content_preview alebo document.content." if ok else "Skontroluj názov dokumentu.",
-                "document": read.get("document"),
-                "capability_result": read,
-            }
+            result = _assistant_result(ok, "Obsah dokumentu bol načítaný.", "Dokument sa nepodarilo načítať.", read)
 
         elif intent == "document_append":
             title, content = parse_append_command(message)
-            if not title or not content:
-                result = {
-                    "status": "error",
-                    "answer": "Nerozumiem príkazu na dopísanie.",
-                    "next_action": "Použi formát: Dopíš do dokumentu NÁZOV text TEXT.",
-                    "document": None,
-                    "capability_result": {"status": "error", "code": "APPEND_COMMAND_PARSE_FAILED"},
-                }
+            if not content:
+                result = _assistant_result(False, "", "Nerozumiem príkazu na dopísanie.", {"status": "error", "code": "APPEND_COMMAND_PARSE_FAILED"})
             else:
-                append = append_document(title, content, rid)
+                append = append_document(title or None, content, rid)
                 ok = append.get("status") == "success"
-                result = {
-                    "status": "success" if ok else "error",
-                    "answer": "Text bol dopísaný do dokumentu." if ok else "Text sa nepodarilo dopísať.",
-                    "next_action": "Otvoriť document.url a skontrolovať koniec dokumentu." if ok else "Skontroluj názov dokumentu.",
-                    "document": append.get("document"),
-                    "capability_result": append,
-                }
+                result = _assistant_result(ok, "Text bol dopísaný do dokumentu.", "Text sa nepodarilo dopísať.", append)
 
         elif intent == "document_update":
             title, find_text, replace_text = parse_update_command(message)
-            if not title or not find_text:
-                result = {
-                    "status": "error",
-                    "answer": "Nerozumiem príkazu na úpravu.",
-                    "next_action": "Použi formát: Uprav v dokumente NÁZOV nahraď STARÝ_TEXT za NOVÝ_TEXT.",
-                    "document": None,
-                    "capability_result": {"status": "error", "code": "UPDATE_COMMAND_PARSE_FAILED"},
-                }
+            if not find_text:
+                result = _assistant_result(False, "", "Nerozumiem príkazu na úpravu.", {"status": "error", "code": "UPDATE_COMMAND_PARSE_FAILED"})
             else:
-                update = update_document(title, find_text, replace_text, rid)
+                update = update_document(title or None, find_text, replace_text, rid, backup=True)
                 ok = update.get("status") == "success"
-                result = {
-                    "status": "success" if ok else "error",
-                    "answer": "Dokument bol upravený." if ok else "Dokument sa nepodarilo upraviť.",
-                    "next_action": "Otvoriť document.url a skontrolovať upravený text." if ok else "Skontroluj názov dokumentu a hľadaný text.",
-                    "document": update.get("document"),
-                    "capability_result": update,
-                }
+                result = _assistant_result(ok, "Dokument bol upravený a zmena bola zalogovaná.", "Dokument sa nepodarilo upraviť.", update)
+
+        elif intent == "document_list":
+            docs = list_documents(rid, limit=10)
+            ok = docs.get("status") == "success"
+            result = _assistant_result(ok, f"Načítal som zoznam dokumentov: {docs.get('count', 0)} položiek.", "Zoznam dokumentov sa nepodarilo načítať.", docs)
+
+        elif intent == "document_smart_write":
+            title, content, mode = parse_smart_write_command(message)
+            if not content:
+                result = _assistant_result(False, "", "Nerozumiem príkazu na inteligentný zápis.", {"status": "error", "code": "SMART_WRITE_PARSE_FAILED"})
+            else:
+                smart = smart_write_document(title or None, content, rid, mode=mode)
+                ok = smart.get("status") == "success"
+                result = _assistant_result(ok, "Inteligentný zápis prebehol úspešne.", "Inteligentný zápis zlyhal.", smart)
+
+        elif intent == "document_active_set":
+            title = parse_title_after_keywords(message, ["pracuj s dokumentom", "nastav aktívny dokument", "nastav aktivny dokument", "set active document"])
+            active = set_active_document(title, rid)
+            ok = active.get("status") == "success"
+            result = _assistant_result(ok, "Aktívny dokument bol nastavený.", "Aktívny dokument sa nepodarilo nastaviť.", active)
+
+        elif intent == "document_active_get":
+            active = get_active_document(rid)
+            ok = active.get("status") == "success"
+            result = _assistant_result(ok, "Aktívny dokument bol načítaný.", "Aktívny dokument nie je nastavený alebo sa nepodarilo načítať.", active)
+
+        elif intent == "document_backup":
+            title = parse_title_after_keywords(message, ["zálohuj dokument", "zalohuj dokument", "backup document"])
+            backup = backup_document(title, rid)
+            ok = backup.get("status") == "success"
+            result = _assistant_result(ok, "Záloha dokumentu bola vytvorená.", "Zálohu dokumentu sa nepodarilo vytvoriť.", backup)
+
+        elif intent == "document_changelog":
+            log = read_change_log(rid)
+            ok = log.get("status") == "success"
+            result = _assistant_result(ok, "História zmien bola načítaná.", "Históriu zmien sa nepodarilo načítať.", log)
 
         else:
-            result = {
-                "status": "success",
-                "answer": "Asistent je pripravený.",
-                "next_action": "Zadaj požiadavku na vytvorenie, nájdenie, čítanie, dopísanie alebo úpravu dokumentu.",
-                "document": None,
-                "capability_result": None,
-            }
+            result = {"status": "success", "answer": "Asistent je pripravený.", "next_action": "Zadaj požiadavku na dokument.", "document": None, "capability_result": None}
 
         capability_result = result["capability_result"] if debug or result["status"] != "success" else _summarize_capability_result(result["capability_result"])
-        return json_response(
-            {
-                "status": result["status"],
-                "assistant": "Executive Assistant",
-                "version": VERSION,
-                "route": route,
-                "knowledge_decision": knowledge_decision(message),
-                "answer": result["answer"],
-                "next_action": result["next_action"],
-                "document": result["document"],
-                "capability_result": capability_result,
-                "request_id": rid,
-            }
-        )
+        return json_response({"status": result["status"], "assistant": "Executive Assistant", "version": VERSION, "route": route, "knowledge_decision": knowledge_decision(message), "answer": result["answer"], "next_action": result["next_action"], "document": result["document"], "capability_result": capability_result, "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
+
+
+def _assistant_result(ok: bool, success_msg: str, error_msg: str, capability: Dict[str, Any]) -> Dict[str, Any]:
+    doc = capability.get("document")
+    if not doc and isinstance(capability.get("documents"), list) and capability["documents"]:
+        doc = capability["documents"][0]
+    return {
+        "status": "success" if ok else "error",
+        "answer": success_msg if ok else error_msg,
+        "next_action": "Otvoriť document.url alebo pokračovať ďalším príkazom." if ok else "Skontrolovať názov dokumentu, Apps Script deployment alebo debug výstup.",
+        "document": doc,
+        "capability_result": capability,
+    }
 
 
 def _summarize_capability_result(result: Any) -> Any:
     if not isinstance(result, dict):
         return result
-    summary = {"status": result.get("status"), "method": result.get("method"), "count": result.get("count")}
-    if result.get("document"):
-        summary["document"] = result.get("document")
+    summary = {"status": result.get("status"), "method": result.get("method"), "count": result.get("count"), "operation": result.get("operation")}
+    for key in ["document", "active_document", "backup", "documents"]:
+        if result.get(key) is not None:
+            summary[key] = result.get(key)
     return {k: v for k, v in summary.items() if v is not None}
 
 
 @app.get("/orchestrator/ask")
 def orchestrator_ask(request: Request, message: str = Query(""), limit: int = Query(5), debug: bool = Query(False)):
     return assistant(request=request, message=message, debug=debug)
+
+
+@app.get("/document/list")
+def document_list_endpoint(request: Request, query: str = Query(""), limit: int = Query(10), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = list_documents(rid, query=query, limit=limit)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/find")
+def document_find_endpoint(request: Request, title: str = Query(""), limit: int = Query(10), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = find_document(title, rid, limit=limit)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/read")
+def document_read_endpoint(request: Request, title: str = Query(""), document_id: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = read_document(title, rid, document_id.strip() or None)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/smart-write")
+def document_smart_write_endpoint(request: Request, title: str = Query(""), content: str = Query(""), mode: str = Query("AUTO_APPEND_OR_CREATE"), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = smart_write_document(title or None, content, rid, mode=mode)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/active")
+def document_active_endpoint(request: Request, title: str = Query(""), document_id: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        if title or document_id:
+            result = set_active_document(title or None, rid, document_id.strip() or None)
+        else:
+            result = get_active_document(rid)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/backup")
+def document_backup_endpoint(request: Request, title: str = Query(""), document_id: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = backup_document(title or None, rid, document_id.strip() or None)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/document/changelog")
+def document_changelog_endpoint(request: Request, limit_chars: int = Query(5000), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = read_change_log(rid, limit_chars=limit_chars)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
 
 
 @app.post("/document/action")
@@ -622,71 +740,42 @@ async def document_action(request: Request):
                 body = {}
         except Exception:
             body = {}
-
         action = str(body.get("action") or "").strip().upper()
         title = _safe_title(str(body.get("title") or ""))
-        content = str(body.get("content") or "")
+        content = _safe_content(str(body.get("content") or ""))
         document_id = str(body.get("document_id") or "").strip() or None
         folder_id = str(body.get("folder_id") or "").strip() or None
         find_text = str(body.get("find_text") or "")
         replace_text = str(body.get("replace_text") or "")
+        limit = _int(body.get("limit"), 10, 1, 50)
 
         if action == "CREATE_DOC":
             result = create_document(title, content or make_default_content(title, "POST /document/action", rid), rid, folder_id)
         elif action == "FIND_DOC":
-            result = find_document(title, rid, folder_id)
+            result = find_document(title, rid, folder_id, limit)
+        elif action == "LIST_DOCS":
+            result = list_documents(rid, query=title, folder_id=folder_id, limit=limit)
         elif action == "READ_DOC":
             result = read_document(title, rid, document_id, folder_id)
         elif action == "APPEND_DOC":
-            result = append_document(title, content, rid, document_id, folder_id)
+            result = append_document(title or None, content, rid, document_id, folder_id)
         elif action == "UPDATE_DOC":
-            result = update_document(title, find_text, replace_text, rid, document_id, folder_id)
+            result = update_document(title or None, find_text, replace_text, rid, document_id, folder_id, backup=_bool(body.get("backup"), True))
+        elif action == "SMART_WRITE":
+            result = smart_write_document(title or None, content, rid, mode=str(body.get("mode") or "AUTO_APPEND_OR_CREATE"), folder_id=folder_id)
+        elif action == "SET_ACTIVE_DOC":
+            result = set_active_document(title or None, rid, document_id, folder_id)
+        elif action == "GET_ACTIVE_DOC":
+            result = get_active_document(rid, folder_id)
+        elif action == "BACKUP_DOC":
+            result = backup_document(title or None, rid, document_id, folder_id)
+        elif action == "READ_CHANGE_LOG":
+            result = read_change_log(rid, folder_id=folder_id)
+        elif action == "READ_MULTI_DOC":
+            result = read_multiple_documents(parse_title_list(body.get("titles")), rid, folder_id)
         else:
-            result = {"status": "error", "code": "UNKNOWN_DOCUMENT_ACTION", "allowed_actions": ["CREATE_DOC", "FIND_DOC", "READ_DOC", "APPEND_DOC", "UPDATE_DOC"]}
-
+            result = {"status": "error", "code": "UNKNOWN_DOCUMENT_ACTION", "allowed_actions": ["CREATE_DOC", "FIND_DOC", "LIST_DOCS", "READ_DOC", "APPEND_DOC", "UPDATE_DOC", "SMART_WRITE", "SET_ACTIVE_DOC", "GET_ACTIVE_DOC", "BACKUP_DOC", "READ_CHANGE_LOG", "READ_MULTI_DOC"]}
         return json_response({"status": result.get("status"), "version": VERSION, "result": result, "request_id": rid})
-    except Exception as e:
-        return safe_error(e, rid)
-
-
-@app.post("/document/create")
-async def document_create(request: Request):
-    rid = request_id()
-    try:
-        check_token(request)
-        try:
-            body = await request.json()
-            if not isinstance(body, dict):
-                body = {}
-        except Exception:
-            body = {}
-        title = _safe_title(str(body.get("title") or "AI_OS Document"))
-        content = str(body.get("content") or make_default_content(title, "POST /document/create", rid))
-        folder_id = str(body.get("folder_id") or "").strip() or None
-        write = create_document(title, content, rid, folder_id)
-        return json_response({"status": write.get("status"), "version": VERSION, "document": write.get("document"), "write_result": write, "request_id": rid})
-    except Exception as e:
-        return safe_error(e, rid)
-
-
-@app.get("/document/find")
-def document_find(request: Request, title: str = Query(""), debug: bool = Query(False)):
-    rid = request_id()
-    try:
-        check_token(request)
-        result = find_document(title, rid)
-        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
-    except Exception as e:
-        return safe_error(e, rid)
-
-
-@app.get("/document/read")
-def document_read(request: Request, title: str = Query(""), document_id: str = Query(""), debug: bool = Query(False)):
-    rid = request_id()
-    try:
-        check_token(request)
-        result = read_document(title, rid, document_id.strip() or None)
-        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
@@ -696,20 +785,19 @@ def capability_registry(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response(
-            {
-                "status": "success",
-                "registry": [
-                    {"id": "CAP-001", "name": "Working Context", "status": "ACTIVE"},
-                    {"id": "CAP-002", "name": "Executive Assistant", "status": "ACTIVE"},
-                    {"id": "CAP-003", "name": "Capability Runtime", "status": "ACTIVE"},
-                    {"id": "CAP-004", "name": "Document Agent Adapter", "status": "ACTIVE"},
-                    {"id": "CAP-004.3", "name": "Apps Script Physical Write", "status": "ACTIVE"},
-                    {"id": "CAP-004.4", "name": "Intelligent Document Management", "status": "ACTIVE"},
-                ],
-                "request_id": rid,
-            }
-        )
+        return json_response({
+            "status": "success",
+            "registry": [
+                {"id": "CAP-001", "name": "Working Context", "status": "ACTIVE"},
+                {"id": "CAP-002", "name": "Executive Assistant", "status": "ACTIVE"},
+                {"id": "CAP-003", "name": "Capability Runtime", "status": "ACTIVE"},
+                {"id": "CAP-004", "name": "Document Agent Adapter", "status": "ACTIVE"},
+                {"id": "CAP-004.3", "name": "Apps Script Physical Write", "status": "ACTIVE"},
+                {"id": "CAP-004.4", "name": "Intelligent Document Management", "status": "ACTIVE"},
+                {"id": "CAP-004.5", "name": "Context-Aware Document Orchestration", "status": "ACTIVE"},
+            ],
+            "request_id": rid,
+        })
     except Exception as e:
         return safe_error(e, rid)
 
@@ -719,14 +807,6 @@ def refresh_index(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response(
-            {
-                "status": "success",
-                "action": "REFRESH_INDEX",
-                "index_status": "ready_safe_noop",
-                "note": "Index refresh is disabled in launch runtime to avoid Render free-tier instability.",
-                "request_id": rid,
-            }
-        )
+        return json_response({"status": "success", "action": "REFRESH_INDEX", "index_status": "ready_safe_noop", "note": "Index refresh is disabled in launch runtime to avoid Render free-tier instability.", "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
