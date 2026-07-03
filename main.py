@@ -1,482 +1,357 @@
 import os
 import re
-import json
 import uuid
-import datetime as dt
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional, Tuple
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
-APP_NAME = "AI_OS v1.7.0 – CAP-007 Calendar & Time Orchestration Foundation"
-VERSION = "v1.7.0-cap007-calendar-time-orchestration-foundation"
+APP_NAME = "AI_OS v2.0 Core Stabilization"
+VERSION = "v2.0.0-core-stabilization"
+REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "35"))
 
-API_TOKEN = os.getenv("API_TOKEN", "").strip()
-AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
-APPS_SCRIPT_WEBAPP_URL = os.getenv("APPS_SCRIPT_WEBAPP_URL", "").strip()
-APPS_SCRIPT_SECRET = os.getenv("APPS_SCRIPT_SECRET", "").strip()
-REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "30"))
-DEFAULT_TZ = os.getenv("AI_OS_TIMEZONE", "Europe/Bratislava").strip() or "Europe/Bratislava"
+API_TOKEN = os.getenv("API_TOKEN", "")
+AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "")
+APPS_SCRIPT_WEBAPP_URL = os.getenv("APPS_SCRIPT_WEBAPP_URL", "")
+APPS_SCRIPT_SECRET = os.getenv("APPS_SCRIPT_SECRET", "")
 
 app = FastAPI(title=APP_NAME, version=VERSION)
 
 ALLOWED_ACTIONS = [
-    "FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE NEW", "SMART WRITE", "BACKUP", "LOG",
-    "MEMORY", "PROJECT", "RULE", "WORKFLOW",
-    "TASK_CREATE", "TASK_FIND", "TASK_UPDATE", "TASK_COMPLETE", "TASK_CANCEL", "TASK_LIST", "TASK_ACTIVE", "TASK_DAILY",
-    "CALENDAR_CREATE", "CALENDAR_FIND", "CALENDAR_LIST", "CALENDAR_READ", "TASK_REMINDER", "TASK_DEADLINE",
-    "DAY_PLAN", "WEEK_PLAN", "MORNING_BRIEFING"
+    "FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE_NEW", "SMART_WRITE", "BACKUP", "LOG",
+    "MEMORY_WRITE", "MEMORY_READ", "PROJECT_SET", "PROJECT_GET", "RULE_ADD", "RULE_LIST",
+    "WORKFLOW", "TASK_CREATE", "TASK_FIND", "TASK_UPDATE", "TASK_COMPLETE", "TASK_CANCEL", "TASK_LIST",
+    "TASK_ACTIVE", "TASK_DAILY", "TASK_REMINDER", "TASK_DEADLINE", "CALENDAR_FIND", "CALENDAR_CREATE",
+    "CALENDAR_READ", "DAY_PLAN", "WEEK_PLAN", "MORNING_BRIEFING", "SYSTEM_STATUS"
 ]
 
-# ---------- utilities ----------
 
-def utc_now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat()
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
 
 def rid() -> str:
     return str(uuid.uuid4())
 
-def ok(data: Dict[str, Any]) -> JSONResponse:
-    return JSONResponse(data, status_code=200)
 
-def auth_ok(token: Optional[str]) -> bool:
+def ok(data: Optional[Dict[str, Any]] = None, request_id: Optional[str] = None) -> Dict[str, Any]:
+    base = {"status": "success", "version": VERSION, "request_id": request_id or rid(), "time_utc": now_iso()}
+    if data:
+        base.update(data)
+    return base
+
+
+def err(code: str, details: str = "", request_id: Optional[str] = None, http_status: int = 200) -> JSONResponse:
+    return JSONResponse(
+        status_code=http_status,
+        content={"status": "error", "version": VERSION, "code": code, "details": details, "request_id": request_id or rid(), "time_utc": now_iso()},
+    )
+
+
+def clean_text(value: Optional[str]) -> str:
+    return (value or "").strip()
+
+
+def token_ok(token: Optional[str]) -> bool:
     return bool(API_TOKEN) and token == API_TOKEN
 
+
 def require_token(request: Request) -> Optional[JSONResponse]:
-    token = request.query_params.get("token", "")
-    if not auth_ok(token):
-        return ok({"status": "error", "detail": "Unauthorized", "request_id": rid(), "time_utc": utc_now()})
+    token = request.query_params.get("token") or request.headers.get("x-ai-os-token")
+    if not token_ok(token):
+        return err("UNAUTHORIZED", "Invalid or missing token.", http_status=401)
     return None
 
-def compact_text(value: str, limit: int = 180) -> str:
-    value = (value or "").strip()
-    return value if len(value) <= limit else value[:limit] + "…"
 
-def extract_after_patterns(text: str, patterns) -> str:
-    lower = text.lower()
+def norm(s: str) -> str:
+    return clean_text(s).lower()
+
+
+def extract_after(message: str, patterns: list[str]) -> str:
     for p in patterns:
-        idx = lower.find(p.lower())
-        if idx >= 0:
-            return text[idx + len(p):].strip(" .:-–—\n\t")
+        m = re.search(p, message, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return clean_text(m.group(1))
     return ""
 
-def title_from_message(message: str, default: str = "AI_OS Document") -> str:
-    patterns = ["dokumentu", "dokument", "s názvom", "nazvom", "názov"]
-    lower = message.lower()
-    for p in patterns:
-        idx = lower.find(p)
-        if idx >= 0:
-            rest = message[idx + len(p):].strip(" .:-–—\n\t")
-            stop_words = [" textom ", " s textom ", " obsahom ", " do textu ", " nahraď ", " nahrad "]
-            cut = len(rest)
-            for s in stop_words:
-                j = rest.lower().find(s)
-                if j >= 0:
-                    cut = min(cut, j)
-            t = rest[:cut].strip(" .:-–—\n\t")
-            if t:
-                return compact_text(t, 120)
-    return default
 
-def content_from_message(message: str) -> str:
-    lower = message.lower()
-    for p in [" textom ", " s textom ", " text ", " obsahom ", " obsah "]:
-        idx = lower.find(p)
-        if idx >= 0:
-            return message[idx + len(p):].strip(" .:-–—\n\t")
-    return message.strip()
+def extract_named_doc(message: str) -> str:
+    m = re.search(r"(?:dokument(?:u|e)?|doc)\s+([A-Za-z0-9_\- .ÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽáäčďéíĺľňóôŕšťúýž]+?)(?:\s+(?:text|textom|s textom|nahraď|nahrad|za|pridaj|dopíš|dopisal|deadline|priorita|stav)|$)", message, re.I)
+    return clean_text(m.group(1)) if m else ""
 
-def task_title_from_message(message: str) -> str:
-    low = message.lower()
-    starters = ["vytvor úlohu", "vytvor ulohu", "pridaj úlohu", "pridaj ulohu", "úloha", "uloha", "task"]
-    for s in starters:
-        if low.startswith(s):
-            return compact_text(message[len(s):].strip(" .:-–—"), 160) or "Nová úloha"
-    return compact_text(message, 160)
 
-def priority_from_message(message: str) -> str:
-    low = message.lower()
-    if any(x in low for x in ["kritick", "critical", "urgent"]): return "CRITICAL"
-    if any(x in low for x in ["vysok", "high"]): return "HIGH"
-    if any(x in low for x in ["nízk", "nizk", "low"]): return "LOW"
+def extract_task_title(message: str) -> str:
+    m = re.search(r"(?:úlohu|uloha|task)\s+([A-Za-z0-9_\- .ÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽáäčďéíĺľňóôŕšťúýž]+?)(?:\s+(?:priorita|projekt|stav|deadline|termín|termin|text|na|do)|$)", message, re.I)
+    return clean_text(m.group(1)) if m else ""
+
+
+def extract_project(message: str) -> str:
+    m = re.search(r"projekt\s+([A-Za-z0-9_\- .ÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽáäčďéíĺľňóôŕšťúýž]+?)(?:\s+(?:priorita|stav|deadline|termín|termin)|$)", message, re.I)
+    return clean_text(m.group(1)) if m else ""
+
+
+def extract_priority(message: str) -> str:
+    t = norm(message)
+    if any(x in t for x in ["kritická", "kriticka", "critical"]):
+        return "CRITICAL"
+    if any(x in t for x in ["vysoká", "vysoka", "high"]):
+        return "HIGH"
+    if any(x in t for x in ["nízka", "nizka", "low"]):
+        return "LOW"
+    if any(x in t for x in ["stredná", "stredna", "medium"]):
+        return "MEDIUM"
     return "MEDIUM"
 
-def status_from_message(message: str) -> Optional[str]:
-    low = message.lower()
-    if any(x in low for x in ["čak", "cak", "waiting"]): return "WAITING"
-    if any(x in low for x in ["aktív", "aktiv", "active"]): return "ACTIVE"
-    if any(x in low for x in ["hotov", "done", "dokonč", "dokonc"]): return "DONE"
-    if any(x in low for x in ["zruš", "zrus", "cancel"]): return "CANCELLED"
-    if any(x in low for x in ["nov", "new"]): return "NEW"
-    return None
 
-def project_from_message(message: str) -> str:
-    low = message.lower()
-    for key in ["projekt", "project"]:
-        i = low.find(key)
-        if i >= 0:
-            rest = message[i+len(key):].strip(" .:-–—")
-            if rest:
-                cut = len(rest)
-                for marker in [" deadline ", " priorita ", " stav ", " termín ", " termin "]:
-                    j = rest.lower().find(marker)
-                    if j >= 0: cut = min(cut, j)
-                return compact_text(rest[:cut], 80)
-    return "AI_OS"
+def extract_status(message: str) -> str:
+    t = norm(message)
+    for st in ["ACTIVE", "WAITING", "DONE", "CANCELLED", "NEW"]:
+        if st.lower() in t:
+            return st
+    if "hotovo" in t or "dokon" in t:
+        return "DONE"
+    return "ACTIVE" if "akt" in t else "NEW"
 
-def deadline_from_message(message: str) -> str:
-    m = re.search(r"(deadline|termín|termin)\s*[:\-]?\s*([0-9]{4}-[0-9]{2}-[0-9]{2}|[0-9]{1,2}\.[0-9]{1,2}\.[0-9]{4}|[^,.]+)", message, re.I)
-    return compact_text(m.group(2).strip(), 80) if m else ""
 
-# ---------- time parsing for CAP-007 ----------
-
-def local_today() -> dt.date:
-    # Server time is UTC; this is good enough for generated defaults. Apps Script uses its project timezone for final Calendar writes.
-    return dt.datetime.utcnow().date()
-
-def parse_date_from_message(message: str) -> dt.date:
-    low = message.lower()
-    today = local_today()
-    if "pozajtra" in low:
-        return today + dt.timedelta(days=2)
-    if "zajtra" in low:
-        return today + dt.timedelta(days=1)
-    if "dnes" in low:
-        return today
-    m = re.search(r"\b(20\d{2})-(\d{1,2})-(\d{1,2})\b", message)
+def extract_date(message: str) -> str:
+    m = re.search(r"(20\d{2}-\d{2}-\d{2})", message)
     if m:
-        return dt.date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
-    m = re.search(r"\b(\d{1,2})\.(\d{1,2})\.(20\d{2})\b", message)
-    if m:
-        return dt.date(int(m.group(3)), int(m.group(2)), int(m.group(1)))
-    return today
+        return m.group(1)
+    if "zajtra" in norm(message):
+        return "TOMORROW"
+    if "dnes" in norm(message):
+        return "TODAY"
+    return ""
 
-def parse_time_from_message(message: str, default_hour: int = 9, default_minute: int = 0) -> Tuple[int, int]:
-    low = message.lower()
-    m = re.search(r"\b(?:o|od)?\s*(\d{1,2})[:.](\d{2})\b", low)
-    if m:
-        return max(0, min(23, int(m.group(1)))), max(0, min(59, int(m.group(2))))
-    m = re.search(r"\b(?:o|od)\s+(\d{1,2})\b", low)
-    if m:
-        return max(0, min(23, int(m.group(1)))), 0
-    if "ráno" in low or "rano" in low: return 8, 0
-    if "obed" in low: return 12, 0
-    if "poobede" in low or "popoludní" in low or "popoludni" in low: return 15, 0
-    if "večer" in low or "vecer" in low: return 19, 0
-    return default_hour, default_minute
 
-def parse_duration_minutes(message: str, default: int = 60) -> int:
-    low = message.lower()
-    m = re.search(r"(\d{1,3})\s*(min|minute|minút|minut)", low)
-    if m:
-        return max(5, min(480, int(m.group(1))))
-    m = re.search(r"(\d{1,2})\s*(h|hod|hodín|hodin)", low)
-    if m:
-        return max(15, min(480, int(m.group(1))*60))
-    return default
+def route_message(message: str) -> Dict[str, Any]:
+    msg = clean_text(message)
+    t = norm(msg)
 
-def iso_local(d: dt.date, h: int, m: int) -> str:
-    return f"{d.isoformat()}T{h:02d}:{m:02d}:00"
+    if not msg:
+        return {"intent": "system_status", "capability_id": "CORE", "action": "SYSTEM_STATUS", "confidence": 0.80, "payload": {}}
 
-def calendar_title_from_message(message: str) -> str:
-    low = message.lower()
-    starters = [
-        "vytvor udalosť", "vytvor udalost", "pridaj udalosť", "pridaj udalost",
-        "vytvor event", "naplánuj", "naplanuj", "daj do kalendára", "daj do kalendara"
-    ]
-    for s in starters:
-        if low.startswith(s):
-            raw = message[len(s):].strip(" .:-–—")
-            for marker in [" zajtra", " dnes", " pozajtra", " o ", " od ", " na "]:
-                j = raw.lower().find(marker)
-                if j > 3:
-                    raw = raw[:j]
-                    break
-            return compact_text(raw or "AI_OS udalosť", 120)
-    return compact_text(message, 120)
+    # Memory / rules / projects
+    if any(x in t for x in ["zapamätaj", "zapamataj", "pamätaj", "pamataj"]):
+        content = extract_after(msg, [r"(?:zapamätaj si|zapamataj si|zapamätaj|zapamataj)\s+(.+)$"]) or msg
+        return {"intent": "memory_write", "capability_id": "CAP-005", "action": "MEMORY_WRITE", "confidence": 0.97, "payload": {"content": content}}
+    if "čo si pam" in t or "co si pam" in t or "ukáž pam" in t:
+        return {"intent": "memory_read", "capability_id": "CAP-005", "action": "MEMORY_READ", "confidence": 0.94, "payload": {}}
+    if t.startswith("nastav projekt") or t.startswith("projekt nastav"):
+        project = extract_after(msg, [r"nastav projekt\s+(.+)$", r"projekt nastav\s+(.+)$"]) or extract_project(msg)
+        return {"intent": "project_set", "capability_id": "CAP-005", "action": "PROJECT_SET", "confidence": 0.96, "payload": {"project": project}}
+    if "aktívny projekt" in t or "aktivny projekt" in t:
+        return {"intent": "project_get", "capability_id": "CAP-005", "action": "PROJECT_GET", "confidence": 0.94, "payload": {}}
+    if t.startswith("pravidlo") or t.startswith("rule"):
+        content = extract_after(msg, [r"pravidlo\s*:\s*(.+)$", r"rule\s*:\s*(.+)$"]) or msg
+        return {"intent": "rule_add", "capability_id": "CAP-005", "action": "RULE_ADD", "confidence": 0.95, "payload": {"content": content}}
+    if "ukáž pravid" in t or "ukaz pravid" in t:
+        return {"intent": "rule_list", "capability_id": "CAP-005", "action": "RULE_LIST", "confidence": 0.94, "payload": {}}
+    if "workflow" in t or "daily_start" in t:
+        wf = extract_after(msg, [r"workflow\s+(.+)$", r"spusti workflow\s+(.+)$"]) or "daily_start"
+        return {"intent": "workflow", "capability_id": "CAP-005", "action": "WORKFLOW", "confidence": 0.90, "payload": {"workflow": wf}}
 
-def calendar_query_from_message(message: str) -> str:
-    return extract_after_patterns(message, ["nájdi udalosť", "najdi udalost", "hľadaj udalosť", "hladaj udalost", "udalosti", "kalendár", "kalendar"]) or ""
+    # Task orchestration
+    if "denný prehľad úloh" in t or "denny prehlad uloh" in t:
+        return {"intent": "task_daily", "capability_id": "CAP-006", "action": "TASK_DAILY", "confidence": 0.95, "payload": {}}
+    if "zoznam úloh" in t or "zoznam uloh" in t:
+        return {"intent": "task_list", "capability_id": "CAP-006", "action": "TASK_LIST", "confidence": 0.95, "payload": {}}
+    if "nájdi úlohu" in t or "najdi ulohu" in t:
+        return {"intent": "task_find", "capability_id": "CAP-006", "action": "TASK_FIND", "confidence": 0.95, "payload": {"query": extract_task_title(msg) or msg}}
+    if "dokonči úlohu" in t or "dokonc ulohu" in t:
+        return {"intent": "task_complete", "capability_id": "CAP-006", "action": "TASK_COMPLETE", "confidence": 0.95, "payload": {"title": extract_task_title(msg) or msg}}
+    if "zruš úlohu" in t or "zrus ulohu" in t:
+        return {"intent": "task_cancel", "capability_id": "CAP-006", "action": "TASK_CANCEL", "confidence": 0.95, "payload": {"title": extract_task_title(msg) or msg}}
+    if "uprav úlohu" in t or "uprav ulohu" in t:
+        return {"intent": "task_update", "capability_id": "CAP-006", "action": "TASK_UPDATE", "confidence": 0.95, "payload": {"title": extract_task_title(msg) or msg, "priority": extract_priority(msg), "status": extract_status(msg), "deadline": extract_date(msg)}}
+    if "vytvor úlohu" in t or "vytvor ulohu" in t or "nová úloha" in t or "nova uloha" in t:
+        return {"intent": "task_create", "capability_id": "CAP-006", "action": "TASK_CREATE", "confidence": 0.95, "payload": {"title": extract_task_title(msg) or msg, "priority": extract_priority(msg), "project": extract_project(msg) or "AI_OS", "owner": "Daniel", "deadline": extract_date(msg), "content": msg}}
+    if "aktívna úloha" in t or "aktivna uloha" in t:
+        return {"intent": "task_active", "capability_id": "CAP-006", "action": "TASK_ACTIVE", "confidence": 0.92, "payload": {}}
 
-def plan_scope_from_message(message: str) -> str:
-    low = message.lower()
-    if any(x in low for x in ["týž", "tyzd", "week"]): return "week"
-    return "day"
+    # Calendar and time
+    if "ranný briefing" in t or "ranny briefing" in t:
+        return {"intent": "morning_briefing", "capability_id": "CAP-007", "action": "MORNING_BRIEFING", "confidence": 0.95, "payload": {}}
+    if "týždenný plán" in t or "tyzdenny plan" in t:
+        return {"intent": "week_plan", "capability_id": "CAP-007", "action": "WEEK_PLAN", "confidence": 0.95, "payload": {}}
+    if "denný plán" in t or "denny plan" in t or "časový plán" in t or "casovy plan" in t:
+        return {"intent": "day_plan", "capability_id": "CAP-007", "action": "DAY_PLAN", "confidence": 0.95, "payload": {}}
+    if "nájdi udal" in t or "najdi udal" in t or "udalosti" in t:
+        return {"intent": "calendar_find", "capability_id": "CAP-007", "action": "CALENDAR_FIND", "confidence": 0.95, "payload": {"query": msg, "date": extract_date(msg)}}
+    if "vytvor udalosť" in t or "vytvor udalost" in t or "kalendár" in t or "kalendar" in t:
+        return {"intent": "calendar_create", "capability_id": "CAP-007", "action": "CALENDAR_CREATE", "confidence": 0.94, "payload": {"title": msg, "date": extract_date(msg)}}
+    if "pripomien" in t:
+        return {"intent": "task_reminder", "capability_id": "CAP-007", "action": "TASK_REMINDER", "confidence": 0.93, "payload": {"title": extract_task_title(msg) or msg, "date": extract_date(msg)}}
+    if "deadline" in t or "termín" in t or "termin" in t:
+        return {"intent": "task_deadline", "capability_id": "CAP-007", "action": "TASK_DEADLINE", "confidence": 0.93, "payload": {"title": extract_task_title(msg) or msg, "deadline": extract_date(msg)}}
 
-# ---------- Apps Script bridge ----------
+    # Documents
+    if "zoznam dokument" in t:
+        return {"intent": "document_list", "capability_id": "CAP-004.5", "action": "FIND", "confidence": 0.92, "payload": {"query": ""}}
+    if "nájdi dokument" in t or "najdi dokument" in t:
+        return {"intent": "document_find", "capability_id": "CAP-004.5", "action": "FIND", "confidence": 0.95, "payload": {"query": extract_named_doc(msg) or msg}}
+    if "prečítaj dokument" in t or "precitaj dokument" in t:
+        return {"intent": "document_read", "capability_id": "CAP-004.5", "action": "READ", "confidence": 0.95, "payload": {"title": extract_named_doc(msg) or msg}}
+    if "zálohuj dokument" in t or "zalohuj dokument" in t:
+        return {"intent": "document_backup", "capability_id": "CAP-004.5", "action": "BACKUP", "confidence": 0.95, "payload": {"title": extract_named_doc(msg) or msg}}
+    if "dopíš" in t or "dopis" in t:
+        doc_title = extract_named_doc(msg)
+        content = extract_after(msg, [r"(?:text|textom)\s+(.+)$", r"dopíš\s+(.+)$", r"dopis\s+(.+)$"]) or msg
+        return {"intent": "document_append", "capability_id": "CAP-004.5", "action": "APPEND", "confidence": 0.94, "payload": {"title": doc_title, "content": content}}
+    if "uprav v dokumente" in t or "nahraď" in t or "nahrad" in t:
+        return {"intent": "document_update", "capability_id": "CAP-004.5", "action": "UPDATE", "confidence": 0.92, "payload": {"title": extract_named_doc(msg), "content": msg}}
+    if "vytvor dokument" in t:
+        title = extract_named_doc(msg) or extract_after(msg, [r"vytvor dokument\s+(.+?)(?:\s+text|\s+textom|$)"])
+        content = extract_after(msg, [r"(?:textom|s textom|text)\s+(.+)$"]) or msg
+        return {"intent": "document_create", "capability_id": "CAP-004.5", "action": "CREATE_NEW", "confidence": 0.95, "payload": {"title": title or "AI_OS Document", "content": content}}
 
-def call_apps_script(action: str, payload: Dict[str, Any], request_id: str, debug: bool=False) -> Dict[str, Any]:
+    return {"intent": "smart_write", "capability_id": "CORE", "action": "SMART_WRITE", "confidence": 0.84, "payload": {"content": msg}}
+
+
+def call_apps_script(route: Dict[str, Any], original_message: str, request_id: str) -> Dict[str, Any]:
     if not APPS_SCRIPT_WEBAPP_URL:
-        return {"status":"error", "code":"APPS_SCRIPT_WEBAPP_URL_MISSING"}
+        return {"status": "error", "code": "APPS_SCRIPT_WEBAPP_URL_MISSING"}
     if not APPS_SCRIPT_SECRET:
-        return {"status":"error", "code":"APPS_SCRIPT_SECRET_MISSING"}
+        return {"status": "error", "code": "APPS_SCRIPT_SECRET_MISSING"}
     if not AI_OS_ROOT_FOLDER_ID:
-        return {"status":"error", "code":"AI_OS_ROOT_FOLDER_ID_MISSING"}
+        return {"status": "error", "code": "AI_OS_ROOT_FOLDER_ID_MISSING"}
 
-    body = dict(payload)
-    body.update({
+    payload = {
         "secret": APPS_SCRIPT_SECRET,
-        "action": action,
-        "folder_id": body.get("folder_id") or AI_OS_ROOT_FOLDER_ID,
         "request_id": request_id,
         "version": VERSION,
-        "timezone": DEFAULT_TZ,
-    })
+        "action": route["action"],
+        "intent": route["intent"],
+        "capability_id": route["capability_id"],
+        "folder_id": AI_OS_ROOT_FOLDER_ID,
+        "message": original_message,
+        "payload": route.get("payload", {}),
+    }
     try:
-        first = requests.post(APPS_SCRIPT_WEBAPP_URL, json=body, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=False)
-        target = first.headers.get("Location")
-        response = first
-        redirected = False
-        if 300 <= first.status_code < 400 and target:
-            redirected = True
-            response = requests.get(target, params={"payload": json.dumps(body, ensure_ascii=False)}, timeout=REQUEST_TIMEOUT_SECONDS)
+        response = requests.post(APPS_SCRIPT_WEBAPP_URL, json=payload, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
+        content_type = response.headers.get("content-type", "")
         try:
             data = response.json()
         except Exception:
-            data = {"status":"error", "code":"NON_JSON_APPS_SCRIPT_RESPONSE", "raw": response.text[:2500]}
-        if debug:
-            data.setdefault("debug_bridge", {})
-            data["debug_bridge"].update({
-                "initial_http_status": first.status_code,
-                "redirected": redirected,
-                "redirect_url_host": (target or "").split('/')[2] if target and '://' in target else "",
-                "final_http_status": response.status_code,
-                "content_type": response.headers.get("content-type", ""),
-            })
+            data = {"status": "error", "code": "NON_JSON_APPS_SCRIPT_RESPONSE", "raw": response.text[:2000]}
+        if response.status_code >= 400:
+            data.setdefault("status", "error")
+            data.setdefault("code", "APPS_SCRIPT_HTTP_ERROR")
+            data["http_status"] = response.status_code
+        data["debug_bridge"] = {
+            "initial_http_status": response.history[0].status_code if response.history else response.status_code,
+            "final_http_status": response.status_code,
+            "content_type": content_type,
+            "redirected": bool(response.history),
+            "redirect_host": response.url.split('/')[2] if response.url.startswith("http") else "",
+        }
         return data
     except requests.Timeout:
-        return {"status":"error", "code":"APPS_SCRIPT_TIMEOUT", "timeout_seconds": REQUEST_TIMEOUT_SECONDS}
-    except Exception as e:
-        return {"status":"error", "code":"APPS_SCRIPT_EXCEPTION", "details": str(e)[:2000]}
+        return {"status": "error", "code": "APPS_SCRIPT_TIMEOUT", "timeout_seconds": REQUEST_TIMEOUT_SECONDS}
+    except Exception as exc:
+        return {"status": "error", "code": exc.__class__.__name__, "details": str(exc)[:2000]}
 
-# ---------- Router ----------
-
-def decide(message: str) -> Dict[str, Any]:
-    low = message.lower().strip()
-
-    # CAP-007 calendar & time
-    if any(x in low for x in ["vytvor udalosť", "vytvor udalost", "pridaj udalosť", "pridaj udalost", "daj do kalendára", "daj do kalendara", "naplánuj", "naplanuj"]):
-        return {"intent":"calendar_create", "capability_id":"CAP-007", "reason":"Požiadavka smeruje na vytvorenie kalendárovej udalosti."}
-    if any(x in low for x in ["zoznam udalostí", "zoznam udalosti", "nájdi udalosť", "najdi udalost", "hľadaj udalosť", "hladaj udalost", "čo mám v kalendári", "co mam v kalendari", "program dňa", "program dna"]):
-        return {"intent":"calendar_find", "capability_id":"CAP-007", "reason":"Požiadavka smeruje na vyhľadanie udalostí v kalendári."}
-    if any(x in low for x in ["pripomienka k úlohe", "pripomienka k ulohe", "pripomeň úlohu", "pripomen ulohu", "pripomeň mi úlohu", "pripomen mi ulohu"]):
-        return {"intent":"task_reminder", "capability_id":"CAP-007", "reason":"Požiadavka smeruje na vytvorenie pripomienky k úlohe."}
-    if "deadline" in low and any(x in low for x in ["úloh", "uloh", "task"]):
-        return {"intent":"task_deadline", "capability_id":"CAP-007", "reason":"Požiadavka smeruje na priradenie deadline k úlohe."}
-    if any(x in low for x in ["denný plán", "denny plan", "týždenný plán", "tyzdenny plan", "ranný briefing", "ranny briefing", "morning briefing"]):
-        return {"intent":"time_plan", "capability_id":"CAP-007", "reason":"Požiadavka smeruje na denný/týždenný časový plán."}
-
-    # CAP-006 tasks
-    if any(x in low for x in ["vytvor úlohu", "vytvor ulohu", "pridaj úlohu", "pridaj ulohu", "nová úloha", "nova uloha"]):
-        return {"intent":"task_create", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na vytvorenie úlohy."}
-    if any(x in low for x in ["zoznam úloh", "zoznam uloh", "ukáž úlohy", "ukaz ulohy", "list tasks", "task list"]):
-        return {"intent":"task_list", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na zoznam úloh."}
-    if any(x in low for x in ["nájdi úlohu", "najdi ulohu", "hľadaj úlohu", "hladaj ulohu"]):
-        return {"intent":"task_find", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na vyhľadanie úlohy."}
-    if any(x in low for x in ["dokonči úlohu", "dokonc ulohu", "splň úlohu", "spln ulohu"]):
-        return {"intent":"task_complete", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na dokončenie úlohy."}
-    if any(x in low for x in ["zruš úlohu", "zrus ulohu", "cancel task"]):
-        return {"intent":"task_cancel", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na zrušenie úlohy."}
-    if any(x in low for x in ["uprav úlohu", "uprav ulohu", "zmeň úlohu", "zmen ulohu", "priorita úlohy", "stav úlohy"]):
-        return {"intent":"task_update", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na úpravu úlohy."}
-    if any(x in low for x in ["aktívna úloha", "aktivna uloha", "pracuj s úlohou", "pracuj s ulohou"]):
-        return {"intent":"task_active", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na aktívnu úlohu."}
-    if any(x in low for x in ["denný prehľad úloh", "denny prehlad uloh", "daily inbox", "prehľad úloh", "prehlad uloh"]):
-        return {"intent":"task_daily", "capability_id":"CAP-006", "reason":"Požiadavka smeruje na denný task prehľad."}
-
-    # CAP-005
-    if any(x in low for x in ["zapamätaj", "zapamataj", "pamäť", "pamat", "čo si pamätáš", "co si pamatas"]):
-        return {"intent":"memory", "capability_id":"CAP-005", "reason":"Práca s pamäťou."}
-    if any(x in low for x in ["projekt", "aktívny projekt", "aktivny projekt"]):
-        return {"intent":"project", "capability_id":"CAP-005", "reason":"Práca s projektovým kontextom."}
-    if any(x in low for x in ["pravidlo", "pravidlá", "pravidla"]):
-        return {"intent":"rule", "capability_id":"CAP-005", "reason":"Práca s pravidlami."}
-    if any(x in low for x in ["workflow", "daily_start"]):
-        return {"intent":"workflow", "capability_id":"CAP-005", "reason":"Spustenie workflow."}
-
-    # CAP-004
-    if any(x in low for x in ["zoznam dokumentov"]):
-        return {"intent":"document_list", "capability_id":"CAP-004.5", "reason":"Zoznam dokumentov."}
-    if any(x in low for x in ["vytvor dokument"]):
-        return {"intent":"document_create", "capability_id":"CAP-004.5", "reason":"Vytvorenie dokumentu."}
-    if any(x in low for x in ["nájdi dokument", "najdi dokument"]):
-        return {"intent":"document_find", "capability_id":"CAP-004.5", "reason":"Vyhľadanie dokumentu."}
-    if any(x in low for x in ["prečítaj dokument", "precitaj dokument"]):
-        return {"intent":"document_read", "capability_id":"CAP-004.5", "reason":"Čítanie dokumentu."}
-    if any(x in low for x in ["dopíš", "dopis", "zapíš do dokumentu", "zapis do dokumentu"]):
-        return {"intent":"document_append", "capability_id":"CAP-004.5", "reason":"Doplnenie dokumentu."}
-    if any(x in low for x in ["uprav v dokumente", "nahraď", "nahrad"]):
-        return {"intent":"document_update", "capability_id":"CAP-004.5", "reason":"Úprava dokumentu."}
-    if any(x in low for x in ["zálohuj", "zalohuj"]):
-        return {"intent":"backup", "capability_id":"CAP-004.5", "reason":"Zálohovanie."}
-    return {"intent":"status", "capability_id":"CAP-005", "reason":"Predvolený bezpečný režim."}
-
-# ---------- handlers ----------
-
-def handle_calendar(intent: str, message: str, request_id: str, debug: bool) -> Dict[str, Any]:
-    d = parse_date_from_message(message)
-    hour, minute = parse_time_from_message(message)
-    duration = parse_duration_minutes(message)
-    start_dt = dt.datetime.combine(d, dt.time(hour, minute))
-    end_dt = start_dt + dt.timedelta(minutes=duration)
-    payload: Dict[str, Any] = {
-        "title": calendar_title_from_message(message),
-        "query": calendar_query_from_message(message) or calendar_title_from_message(message),
-        "content": message,
-        "date": d.isoformat(),
-        "start_iso": start_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-        "end_iso": end_dt.strftime("%Y-%m-%dT%H:%M:%S"),
-        "duration_minutes": duration,
-        "timezone": DEFAULT_TZ,
-        "project": project_from_message(message),
-        "task_query": extract_after_patterns(message, ["úlohe", "ulohe", "úlohu", "ulohu"]) or "",
-        "scope": plan_scope_from_message(message),
-    }
-    action_map = {
-        "calendar_create": "CALENDAR_CREATE",
-        "calendar_find": "CALENDAR_FIND",
-        "task_reminder": "TASK_REMINDER",
-        "task_deadline": "TASK_DEADLINE",
-        "time_plan": "TIME_PLAN",
-    }
-    return call_apps_script(action_map[intent], payload, request_id, debug)
-
-def handle_task(intent: str, message: str, request_id: str, debug: bool) -> Dict[str, Any]:
-    query = extract_after_patterns(message, ["nájdi úlohu", "najdi ulohu", "hľadaj úlohu", "hladaj ulohu", "dokonči úlohu", "dokonc ulohu", "zruš úlohu", "zrus ulohu", "pracuj s úlohou", "pracuj s ulohou"]) or message
-    payload: Dict[str, Any] = {
-        "title": task_title_from_message(message),
-        "query": query,
-        "project": project_from_message(message),
-        "priority": priority_from_message(message),
-        "status": status_from_message(message) or "NEW",
-        "deadline": deadline_from_message(message),
-        "owner": "Daniel",
-        "content": message,
-    }
-    action_map = {
-        "task_create":"TASK_CREATE", "task_list":"TASK_LIST", "task_find":"TASK_FIND", "task_update":"TASK_UPDATE",
-        "task_complete":"TASK_COMPLETE", "task_cancel":"TASK_CANCEL", "task_active":"TASK_ACTIVE", "task_daily":"TASK_DAILY",
-    }
-    return call_apps_script(action_map[intent], payload, request_id, debug)
-
-def handle_legacy(intent: str, message: str, request_id: str, debug: bool) -> Dict[str, Any]:
-    low = message.lower()
-    if intent == "memory":
-        action = "MEMORY_READ" if any(x in low for x in ["čo si pamätáš", "co si pamatas", "ukáž pamäť", "ukaz pamat"]) else "MEMORY_WRITE"
-        content = extract_after_patterns(message, ["zapamätaj si", "zapamataj si", "zapamätaj", "zapamataj"]) or message
-        return call_apps_script(action, {"content":content, "category":"general"}, request_id, debug)
-    if intent == "project":
-        action = "PROJECT_GET" if any(x in low for x in ["aktívny projekt", "aktivny projekt"]) else "PROJECT_SET"
-        return call_apps_script(action, {"project":project_from_message(message), "content":message}, request_id, debug)
-    if intent == "rule":
-        action = "RULE_LIST" if any(x in low for x in ["ukáž", "ukaz", "pravidlá", "pravidla"]) else "RULE_ADD"
-        return call_apps_script(action, {"content":extract_after_patterns(message, ["pravidlo:","pravidlo"]) or message}, request_id, debug)
-    if intent == "workflow":
-        return call_apps_script("WORKFLOW_RUN", {"workflow":"daily_start", "content":message}, request_id, debug)
-
-    # document actions
-    action_map = {
-        "document_list":"LIST_DOCS",
-        "document_create":"CREATE_DOC",
-        "document_find":"FIND_DOC",
-        "document_read":"READ_DOC",
-        "document_append":"APPEND_DOC",
-        "document_update":"UPDATE_DOC",
-        "backup":"BACKUP_DOC",
-    }
-    title = title_from_message(message)
-    query = extract_after_patterns(message, ["nájdi dokument", "najdi dokument", "prečítaj dokument", "precitaj dokument", "zálohuj dokument", "zalohuj dokument"]) or title
-    return call_apps_script(action_map.get(intent, "STATUS"), {"title":title, "query":query, "content":content_from_message(message)}, request_id, debug)
-
-def route_message(message: str, debug: bool=False) -> Dict[str, Any]:
-    request_id = rid()
-    decision = decide(message)
-    intent = decision["intent"]
-    if intent.startswith("calendar") or intent in {"task_reminder", "task_deadline", "time_plan"}:
-        result = handle_calendar(intent, message, request_id, debug)
-    elif intent.startswith("task_"):
-        result = handle_task(intent, message, request_id, debug)
-    elif intent == "status":
-        result = call_apps_script("STATUS", {"content":message}, request_id, debug)
-    else:
-        result = handle_legacy(intent, message, request_id, debug)
-
-    return {
-        "status": "success",
-        "assistant": "Executive Assistant",
-        "version": VERSION,
-        "route": {
-            "intent": intent,
-            "capability_id": decision["capability_id"],
-            "confidence": 0.95,
-            "reason": decision["reason"],
-            "allowed_actions": ALLOWED_ACTIONS,
-        },
-        "answer": result.get("answer") or result.get("message") or "Požiadavka bola spracovaná.",
-        "next_action": result.get("next_action", "Skontrolovať výsledok v Google Drive alebo Google Calendar."),
-        "capability_result": result,
-        "request_id": request_id,
-        "time_utc": utc_now(),
-    }
-
-# ---------- endpoints ----------
-
-@app.head("/")
-def root_head():
-    return JSONResponse(status_code=200, content={})
 
 @app.get("/")
 def root():
-    return ok({"service":APP_NAME, "status":"running", "version":VERSION, "message":"AI_OS v1.7.0 CAP-007 Calendar & Time Orchestration is available.", "time_utc":utc_now()})
+    return ok({
+        "service": APP_NAME,
+        "message": "AI_OS v2.0 Core Stabilization is running.",
+        "config": {
+            "api_token_configured": bool(API_TOKEN),
+            "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
+            "apps_script_webapp_url_configured": bool(APPS_SCRIPT_WEBAPP_URL),
+            "apps_script_secret_configured": bool(APPS_SCRIPT_SECRET),
+        },
+    })
+
+
+@app.head("/")
+def root_head():
+    return PlainTextResponse("")
+
+
+@app.get("/debug/config")
+def debug_config(request: Request):
+    auth = require_token(request)
+    if auth:
+        return auth
+    return ok({
+        "config": {
+            "api_token_configured": bool(API_TOKEN),
+            "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
+            "apps_script_webapp_url_configured": bool(APPS_SCRIPT_WEBAPP_URL),
+            "apps_script_secret_configured": bool(APPS_SCRIPT_SECRET),
+            "allowed_actions": ALLOWED_ACTIONS,
+        }
+    })
+
 
 @app.get("/self-test")
 def self_test(request: Request):
-    denied = require_token(request)
-    if denied: return denied
-    tests = [
-        ("root", True),
-        ("api_token", bool(API_TOKEN)),
-        ("root_folder_id", bool(AI_OS_ROOT_FOLDER_ID)),
-        ("apps_script_webapp_url", bool(APPS_SCRIPT_WEBAPP_URL)),
-        ("apps_script_secret", bool(APPS_SCRIPT_SECRET)),
-        ("router_document", decide("Vytvor dokument Test")["intent"] == "document_create"),
-        ("router_memory", decide("Zapamätaj si test")["intent"] == "memory"),
-        ("router_project", decide("Nastav projekt AI_OS")["intent"] == "project"),
-        ("router_task_create", decide("Vytvor úlohu test")["intent"] == "task_create"),
-        ("router_task_daily", decide("Denný prehľad úloh")["intent"] == "task_daily"),
-        ("router_calendar_create", decide("Vytvor udalosť Test zajtra o 9:00")["intent"] == "calendar_create"),
-        ("router_calendar_find", decide("Zoznam udalostí dnes")["intent"] == "calendar_find"),
-        ("router_task_reminder", decide("Pripomienka k úlohe CAP007 zajtra o 9")["intent"] == "task_reminder"),
-        ("router_task_deadline", decide("Deadline úlohy CAP007 2026-07-10")["intent"] == "task_deadline"),
-        ("router_time_plan", decide("Denný plán")["intent"] == "time_plan"),
-    ]
-    return ok({
-        "status":"success",
-        "self_test":"PASS" if all(v for _, v in tests) else "FAIL",
-        "version":VERSION,
-        "tests":[{"name":n, "status":"PASS" if v else "FAIL"} for n,v in tests],
-        "request_id":rid(),
-        "time_utc":utc_now(),
-    })
+    auth = require_token(request)
+    if auth:
+        return auth
+    tests = []
+    checks = {
+        "root": True,
+        "api_token": bool(API_TOKEN),
+        "root_folder_id": bool(AI_OS_ROOT_FOLDER_ID),
+        "apps_script_webapp_url": bool(APPS_SCRIPT_WEBAPP_URL),
+        "apps_script_secret": bool(APPS_SCRIPT_SECRET),
+        "router_document": route_message("Vytvor dokument Test textom A")["action"] == "CREATE_NEW",
+        "router_memory": route_message("Zapamätaj si test")["action"] == "MEMORY_WRITE",
+        "router_project": route_message("Nastav projekt AI_OS")["action"] == "PROJECT_SET",
+        "router_rule": route_message("Pravidlo: odpovedaj slovensky")["action"] == "RULE_ADD",
+        "router_task_create": route_message("Vytvor úlohu Test priorita vysoká projekt AI_OS")["action"] == "TASK_CREATE",
+        "router_task_daily": route_message("Denný prehľad úloh")["action"] == "TASK_DAILY",
+        "router_calendar_find": route_message("Nájdi udalosti dnes")["action"] == "CALENDAR_FIND",
+        "router_calendar_create": route_message("Vytvor udalosť test dnes")["action"] == "CALENDAR_CREATE",
+        "router_time_plan": route_message("Denný plán")["action"] == "DAY_PLAN",
+        "router_morning_briefing": route_message("Ranný briefing")["action"] == "MORNING_BRIEFING",
+    }
+    for name, passed in checks.items():
+        tests.append({"name": name, "status": "PASS" if passed else "FAIL"})
+    return ok({"self_test": "PASS" if all(checks.values()) else "FAIL", "tests": tests})
+
 
 @app.get("/assistant")
-def assistant(request: Request):
-    denied = require_token(request)
-    if denied: return denied
-    message = request.query_params.get("message", "").strip()
-    debug = request.query_params.get("debug", "").lower() in {"1","true","yes","ano"}
-    if not message:
-        return ok({"status":"error", "detail":"Missing message.", "request_id":rid(), "time_utc":utc_now()})
-    return ok(route_message(message, debug=debug))
+def assistant(request: Request, message: str = "", debug: bool = False):
+    auth = require_token(request)
+    if auth:
+        return auth
+    request_id = rid()
+    route = route_message(message)
+    result = call_apps_script(route, message, request_id)
+    response = ok({
+        "assistant": "Executive Assistant",
+        "route": route,
+        "allowed_actions": ALLOWED_ACTIONS,
+        "answer": result.get("answer") or result.get("message") or "Hotovo.",
+        "capability_result": result,
+    }, request_id=request_id)
+    if not debug:
+        response.pop("allowed_actions", None)
+    return JSONResponse(content=response)
+
 
 @app.post("/assistant")
 async def assistant_post(request: Request):
-    denied = require_token(request)
-    if denied: return denied
+    auth = require_token(request)
+    if auth:
+        return auth
     body = await request.json()
-    message = str(body.get("message", "")).strip()
+    message = clean_text(body.get("message", ""))
     debug = bool(body.get("debug", False))
-    if not message:
-        return ok({"status":"error", "detail":"Missing message.", "request_id":rid(), "time_utc":utc_now()})
-    return ok(route_message(message, debug=debug))
+    request_id = rid()
+    route = route_message(message)
+    result = call_apps_script(route, message, request_id)
+    return JSONResponse(content=ok({
+        "assistant": "Executive Assistant",
+        "route": route,
+        "answer": result.get("answer") or result.get("message") or "Hotovo.",
+        "capability_result": result,
+        "debug": debug,
+    }, request_id=request_id))
