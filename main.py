@@ -8,8 +8,8 @@ import requests
 from fastapi import FastAPI, Request, HTTPException, Query
 from fastapi.responses import JSONResponse
 
-APP_NAME = "AI_OS_ORCHESTRATOR_V1_4_9_CAP0045_CONTEXT_AWARE_DOCUMENT_ORCHESTRATION"
-VERSION = "1.4.9-cap0045-context-aware-document-orchestration"
+APP_NAME = "AI_OS_ORCHESTRATOR_V1_5_0_CAP005_ORCHESTRATOR_FOUNDATION"
+VERSION = "1.5.0-cap005-orchestrator-foundation"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
@@ -68,7 +68,7 @@ def public_config() -> Dict[str, Any]:
         "apps_script_webapp_url_configured": bool(APPS_SCRIPT_WEBAPP_URL),
         "apps_script_secret_configured": bool(APPS_SCRIPT_SECRET),
         "write_mode": "APPS_SCRIPT_OWNER_CONTEXT",
-        "capability": "CAP-004.5 Context-Aware Document Orchestration",
+        "capability": "CAP-005 Orchestrator Foundation",
     }
 
 
@@ -117,7 +117,7 @@ def make_default_content(title: str, message: str, rid: str) -> str:
     return f"""# {title}
 
 Status: DRAFT
-Created by: AI_OS v1.4.9 CAP-004.5 Context-Aware Document Orchestration
+Created by: AI_OS v1.5.0 CAP-005 Orchestrator Foundation
 Request ID: {rid}
 Created at: {utc_now()}
 
@@ -127,7 +127,7 @@ Created at: {utc_now()}
 
 ## Technický režim
 
-Zápis a správa dokumentu idú cez CAP-004.5, Apps Script Web App a owner-context Google Drive zápis.
+Zápis, pamäť, projekty, pravidlá a workflow idú cez CAP-005, Apps Script Web App a owner-context Google Drive zápis.
 """
 
 
@@ -239,8 +239,78 @@ def parse_title_after_keywords(message: str, keywords: List[str]) -> str:
     return _safe_title(text)
 
 
+
+def parse_memory_command(message: str) -> str:
+    text = (message or "").strip()
+    patterns = [
+        r"(?is)^\s*(?:zapamätaj si|zapamataj si|pamätaj si|pamataj si|ulož do pamäte|uloz do pamate|remember)\s+(.+)$",
+        r"(?is)^\s*(?:memory|pamäť|pamat)\s*[:\-–—]\s*(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, text)
+        if m:
+            return _safe_content(_strip_quotes(m.group(1)))
+    return ""
+
+
+def parse_project_set_command(message: str) -> str:
+    text = (message or "").strip()
+    patterns = [
+        r"(?is)^\s*(?:nastav projekt|prepni projekt|projekt|pracuj na projekte|set project)\s+(.+)$",
+        r"(?is)^\s*(?:aktívny projekt|aktivny projekt)\s*[:\-–—]\s*(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, text)
+        if m:
+            return _safe_title(m.group(1))
+    return ""
+
+
+def parse_rule_command(message: str) -> str:
+    text = (message or "").strip()
+    patterns = [
+        r"(?is)^\s*(?:pravidlo|rule)\s*[:\-–—]?\s*(.+)$",
+        r"(?is)^\s*(?:pridaj pravidlo|nastav pravidlo|add rule)\s+(.+)$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, text)
+        if m:
+            return _safe_content(_strip_quotes(m.group(1)))
+    return ""
+
+
+def parse_workflow_command(message: str) -> str:
+    text = (message or "").strip()
+    patterns = [
+        r"(?is)^\s*(?:spusti workflow|spusti proces|workflow|run workflow)\s+(.+)$",
+        r"(?is)^\s*(?:ranný štart|ranny start|daily start|denný štart|denny start)\s*$",
+    ]
+    for pattern in patterns:
+        m = re.match(pattern, text)
+        if m:
+            if m.lastindex:
+                return _safe_title(m.group(1))
+            return "daily_start"
+    return ""
+
 def intent_router(message: str) -> Dict[str, Any]:
     m = (message or "").lower().strip()
+    if any(x in m for x in ["zapamätaj si", "zapamataj si", "pamätaj si", "pamataj si", "ulož do pamäte", "uloz do pamate", "remember"]):
+        return {"intent": "memory_write", "capability_id": "CAP-005", "confidence": 0.97}
+    if any(x in m for x in ["čo si pamätáš", "co si pamatas", "ukáž pamäť", "ukaz pamat", "čítaj pamäť", "citaj pamat", "read memory"]):
+        return {"intent": "memory_read", "capability_id": "CAP-005", "confidence": 0.94}
+    if any(x in m for x in ["nastav projekt", "prepni projekt", "pracuj na projekte", "set project"]):
+        return {"intent": "project_set", "capability_id": "CAP-005", "confidence": 0.96}
+    if any(x in m for x in ["aktívny projekt", "aktivny projekt", "aký je projekt", "aky je projekt", "current project"]):
+        return {"intent": "project_get", "capability_id": "CAP-005", "confidence": 0.93}
+    if any(x in m for x in ["pridaj pravidlo", "nastav pravidlo", "pravidlo:", "rule:", "add rule"]):
+        return {"intent": "rule_add", "capability_id": "CAP-005", "confidence": 0.95}
+    if any(x in m for x in ["ukáž pravidlá", "ukaz pravidla", "zoznam pravidiel", "read rules", "rules"]):
+        return {"intent": "rule_list", "capability_id": "CAP-005", "confidence": 0.92}
+    if any(x in m for x in ["spusti workflow", "spusti proces", "run workflow", "ranný štart", "ranny start", "daily start", "denný štart", "denny start"]):
+        return {"intent": "workflow_run", "capability_id": "CAP-005", "confidence": 0.94}
+    if any(x in m for x in ["orchestruj", "orchestrate", "vykonaj plán", "vykonaj plan"]):
+        return {"intent": "orchestrate", "capability_id": "CAP-005", "confidence": 0.90}
     if any(x in m for x in ["zoznam dokumentov", "posledné dokumenty", "posledne dokumenty", "list documents", "recent documents"]):
         return {"intent": "document_list", "capability_id": "CAP-004.5", "confidence": 0.95}
     if any(x in m for x in ["aktívny dokument", "aktivny dokument", "current document", "active document"]):
@@ -271,7 +341,13 @@ def intent_router(message: str) -> Dict[str, Any]:
 def knowledge_decision(message: str) -> Dict[str, Any]:
     route = intent_router(message)
     intent = route["intent"]
-    if intent == "document_smart_write":
+    if intent in {"memory_write", "project_set", "rule_add", "workflow_run", "orchestrate"}:
+        decision = "ORCHESTRATE"
+        reason = "CAP-005 smeruje požiadavku do pamäte, projektu, pravidiel alebo workflow."
+    elif intent in {"memory_read", "project_get", "rule_list"}:
+        decision = "REUSE"
+        reason = "CAP-005 načítava existujúci kontext, pravidlá alebo pamäť."
+    elif intent == "document_smart_write":
         decision = "AUTO ROUTE"
         reason = "CAP-004.5 rozhodne, či použiť aktívny/existujúci dokument alebo vytvoriť nový."
     elif intent in {"document_create"}:
@@ -294,7 +370,7 @@ def knowledge_decision(message: str) -> Dict[str, Any]:
         "decision": decision,
         "confidence": route.get("confidence", 0.8),
         "reason": reason,
-        "allowed_actions": ["FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE NEW", "SMART_WRITE", "BACKUP", "LOG"],
+        "allowed_actions": ["FIND", "READ", "REUSE", "APPEND", "UPDATE", "CREATE NEW", "SMART_WRITE", "BACKUP", "LOG", "MEMORY", "PROJECT", "RULE", "WORKFLOW"],
     }
 
 
@@ -443,6 +519,38 @@ def read_multiple_documents(titles: List[str], rid: str, folder_id: Optional[str
     return call_apps_script_action("READ_MULTI_DOC", rid, titles=titles[:10], folder_id=folder_id)
 
 
+
+def write_memory(content: str, rid: str, category: str = "general", folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("WRITE_MEMORY", rid, content=_safe_content(content), category=_safe_title(category), folder_id=folder_id)
+
+
+def read_memory(rid: str, query: str = "", limit_chars: int = 7000, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("READ_MEMORY", rid, query=_strip_quotes(query), limit_chars=max(1000, min(limit_chars, 30000)), folder_id=folder_id)
+
+
+def set_project(project: str, rid: str, note: str = "", folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("SET_PROJECT", rid, project=_safe_title(project), note=_safe_content(note), folder_id=folder_id)
+
+
+def get_project(rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("GET_PROJECT", rid, folder_id=folder_id)
+
+
+def add_rule(rule: str, rid: str, scope: str = "global", folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("ADD_RULE", rid, rule=_safe_content(rule), scope=_safe_title(scope), folder_id=folder_id)
+
+
+def read_rules(rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("READ_RULES", rid, folder_id=folder_id)
+
+
+def run_workflow(workflow: str, rid: str, message: str = "", folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("RUN_WORKFLOW", rid, workflow=_safe_title(workflow), message=_safe_content(message), folder_id=folder_id)
+
+
+def orchestrate_request(message: str, rid: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
+    return call_apps_script_action("ORCHESTRATE", rid, message=_safe_content(message), folder_id=folder_id)
+
 # -----------------------------------------------------------------------------
 # HTTP endpoints
 # -----------------------------------------------------------------------------
@@ -458,13 +566,17 @@ def root():
         "service": APP_NAME,
         "status": "running",
         "version": VERSION,
-        "message": "AI_OS CAP-004.5 Context-Aware Document Orchestration is online.",
+        "message": "AI_OS CAP-005 Orchestrator Foundation is online.",
         "use": [
             "/assistant?token=...&message=Zoznam%20dokumentov",
             "/assistant?token=...&message=Pracuj%20s%20dokumentom%20Test",
             "/assistant?token=...&message=Zapíš%20do%20dokumentu%20Test%20text%20Nový%20riadok",
             "/assistant?token=...&message=Dopíš%20text%20Text%20do%20aktívneho%20dokumentu",
             "/assistant?token=...&message=História%20zmien",
+            "/assistant?token=...&message=Zapamätaj%20si%20Dôležitá%20poznámka",
+            "/assistant?token=...&message=Nastav%20projekt%20AI_OS",
+            "/assistant?token=...&message=Pravidlo:%20všetko%20zapisuj%20stručne",
+            "/assistant?token=...&message=Spusti%20workflow%20daily_start",
         ],
         "config": public_config(),
     })
@@ -475,7 +587,7 @@ def orchestrator_health(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response({"status": "ok", "service": APP_NAME, "version": VERSION, "orchestrator": "enabled", "document_management": "enabled", "context_aware_orchestration": "enabled", "write_mode": "apps_script_owner_context", "request_id": rid})
+        return json_response({"status": "ok", "service": APP_NAME, "version": VERSION, "orchestrator": "enabled", "document_management": "enabled", "context_aware_orchestration": "enabled", "orchestrator_foundation": "enabled", "memory": "enabled", "project_contexts": "enabled", "rules_engine": "enabled", "workflow_runtime": "enabled", "write_mode": "apps_script_owner_context", "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
@@ -485,7 +597,7 @@ def assistant_health(request: Request):
     rid = request_id()
     try:
         check_token(request)
-        return json_response({"status": "ok", "assistant": "Executive Assistant", "version": VERSION, "uses": ["CAP-002", "CAP-003", "CAP-004", "CAP-004.3", "CAP-004.4", "CAP-004.5", "SRV-001"], "request_id": rid})
+        return json_response({"status": "ok", "assistant": "Executive Assistant", "version": VERSION, "uses": ["CAP-002", "CAP-003", "CAP-004", "CAP-004.3", "CAP-004.4", "CAP-004.5", "CAP-005", "SRV-001"], "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
@@ -511,6 +623,13 @@ def self_test(request: Request):
             {"name": "root_folder_id", "status": "PASS" if AI_OS_ROOT_FOLDER_ID else "FAIL"},
             {"name": "apps_script_webapp_url", "status": "PASS" if APPS_SCRIPT_WEBAPP_URL else "FAIL"},
             {"name": "apps_script_secret", "status": "PASS" if APPS_SCRIPT_SECRET else "FAIL"},
+            {"name": "router_memory_write", "status": "PASS" if intent_router("Zapamätaj si toto je test")["intent"] == "memory_write" else "FAIL"},
+            {"name": "router_memory_read", "status": "PASS" if intent_router("Čo si pamätáš")["intent"] == "memory_read" else "FAIL"},
+            {"name": "router_project_set", "status": "PASS" if intent_router("Nastav projekt AI_OS")["intent"] == "project_set" else "FAIL"},
+            {"name": "router_project_get", "status": "PASS" if intent_router("Aktívny projekt")["intent"] == "project_get" else "FAIL"},
+            {"name": "router_rule_add", "status": "PASS" if intent_router("Pravidlo: odpovedaj stručne")["intent"] == "rule_add" else "FAIL"},
+            {"name": "router_rule_list", "status": "PASS" if intent_router("Ukáž pravidlá")["intent"] == "rule_list" else "FAIL"},
+            {"name": "router_workflow", "status": "PASS" if intent_router("Spusti workflow daily_start")["intent"] == "workflow_run" else "FAIL"},
             {"name": "router_create", "status": "PASS" if intent_router("Vytvor dokument Test")["intent"] == "document_create" else "FAIL"},
             {"name": "router_find", "status": "PASS" if intent_router("Nájdi dokument Test")["intent"] == "document_find" else "FAIL"},
             {"name": "router_read", "status": "PASS" if intent_router("Prečítaj dokument Test")["intent"] == "document_read" else "FAIL"},
@@ -537,7 +656,58 @@ def assistant(request: Request, message: str = Query(""), debug: bool = Query(Fa
         intent = route["intent"]
         result: Dict[str, Any]
 
-        if intent == "document_create":
+
+        if intent == "memory_write":
+            content = parse_memory_command(message)
+            if not content:
+                result = _assistant_result(False, "", "Nerozumiem príkazu na zápis do pamäte.", {"status": "error", "code": "MEMORY_COMMAND_PARSE_FAILED"})
+            else:
+                mem = write_memory(content, rid)
+                ok = mem.get("status") == "success"
+                result = _assistant_result(ok, "Poznámka bola uložená do pamäte AI_OS.", "Poznámku sa nepodarilo uložiť do pamäte.", mem)
+
+        elif intent == "memory_read":
+            mem = read_memory(rid)
+            ok = mem.get("status") == "success"
+            result = _assistant_result(ok, "Pamäť AI_OS bola načítaná.", "Pamäť sa nepodarilo načítať.", mem)
+
+        elif intent == "project_set":
+            project = parse_project_set_command(message)
+            proj = set_project(project or "AI_OS", rid, note=message)
+            ok = proj.get("status") == "success"
+            result = _assistant_result(ok, "Aktívny projekt bol nastavený.", "Projekt sa nepodarilo nastaviť.", proj)
+
+        elif intent == "project_get":
+            proj = get_project(rid)
+            ok = proj.get("status") == "success"
+            result = _assistant_result(ok, "Aktívny projekt bol načítaný.", "Aktívny projekt zatiaľ nie je nastavený.", proj)
+
+        elif intent == "rule_add":
+            rule = parse_rule_command(message)
+            if not rule:
+                result = _assistant_result(False, "", "Nerozumiem pravidlu.", {"status": "error", "code": "RULE_PARSE_FAILED"})
+            else:
+                rules = add_rule(rule, rid)
+                ok = rules.get("status") == "success"
+                result = _assistant_result(ok, "Pravidlo bolo uložené.", "Pravidlo sa nepodarilo uložiť.", rules)
+
+        elif intent == "rule_list":
+            rules = read_rules(rid)
+            ok = rules.get("status") == "success"
+            result = _assistant_result(ok, "Pravidlá boli načítané.", "Pravidlá sa nepodarilo načítať.", rules)
+
+        elif intent == "workflow_run":
+            workflow = parse_workflow_command(message) or "daily_start"
+            wf = run_workflow(workflow, rid, message=message)
+            ok = wf.get("status") == "success"
+            result = _assistant_result(ok, "Workflow bol spustený.", "Workflow sa nepodarilo spustiť.", wf)
+
+        elif intent == "orchestrate":
+            orch = orchestrate_request(message, rid)
+            ok = orch.get("status") == "success"
+            result = _assistant_result(ok, "Požiadavka bola orchestrátorom spracovaná.", "Orchestrácia zlyhala.", orch)
+
+        elif intent == "document_create":
             title = extract_title_from_create(message)
             content = extract_content_from_create(message, title, rid)
             write = create_document(title, content, rid)
@@ -638,7 +808,7 @@ def _summarize_capability_result(result: Any) -> Any:
     if not isinstance(result, dict):
         return result
     summary = {"status": result.get("status"), "method": result.get("method"), "count": result.get("count"), "operation": result.get("operation")}
-    for key in ["document", "active_document", "backup", "documents"]:
+    for key in ["document", "active_document", "backup", "documents", "memory", "project", "rules", "workflow", "steps"]:
         if result.get(key) is not None:
             summary[key] = result.get(key)
     return {k: v for k, v in summary.items() if v is not None}
@@ -773,12 +943,72 @@ async def document_action(request: Request):
             result = read_change_log(rid, folder_id=folder_id)
         elif action == "READ_MULTI_DOC":
             result = read_multiple_documents(parse_title_list(body.get("titles")), rid, folder_id)
+        elif action == "WRITE_MEMORY":
+            result = write_memory(content, rid, category=str(body.get("category") or "general"), folder_id=folder_id)
+        elif action == "READ_MEMORY":
+            result = read_memory(rid, query=str(body.get("query") or ""), folder_id=folder_id)
+        elif action == "SET_PROJECT":
+            result = set_project(str(body.get("project") or title or "AI_OS"), rid, note=content, folder_id=folder_id)
+        elif action == "GET_PROJECT":
+            result = get_project(rid, folder_id=folder_id)
+        elif action == "ADD_RULE":
+            result = add_rule(str(body.get("rule") or content), rid, scope=str(body.get("scope") or "global"), folder_id=folder_id)
+        elif action == "READ_RULES":
+            result = read_rules(rid, folder_id=folder_id)
+        elif action == "RUN_WORKFLOW":
+            result = run_workflow(str(body.get("workflow") or title or "daily_start"), rid, message=content, folder_id=folder_id)
+        elif action == "ORCHESTRATE":
+            result = orchestrate_request(content or str(body.get("message") or ""), rid, folder_id=folder_id)
         else:
-            result = {"status": "error", "code": "UNKNOWN_DOCUMENT_ACTION", "allowed_actions": ["CREATE_DOC", "FIND_DOC", "LIST_DOCS", "READ_DOC", "APPEND_DOC", "UPDATE_DOC", "SMART_WRITE", "SET_ACTIVE_DOC", "GET_ACTIVE_DOC", "BACKUP_DOC", "READ_CHANGE_LOG", "READ_MULTI_DOC"]}
+            result = {"status": "error", "code": "UNKNOWN_DOCUMENT_ACTION", "allowed_actions": ["CREATE_DOC", "FIND_DOC", "LIST_DOCS", "READ_DOC", "APPEND_DOC", "UPDATE_DOC", "SMART_WRITE", "SET_ACTIVE_DOC", "GET_ACTIVE_DOC", "BACKUP_DOC", "READ_CHANGE_LOG", "READ_MULTI_DOC", "WRITE_MEMORY", "READ_MEMORY", "SET_PROJECT", "GET_PROJECT", "ADD_RULE", "READ_RULES", "RUN_WORKFLOW", "ORCHESTRATE"]}
         return json_response({"status": result.get("status"), "version": VERSION, "result": result, "request_id": rid})
     except Exception as e:
         return safe_error(e, rid)
 
+
+
+@app.get("/memory")
+def memory_endpoint(request: Request, write: str = Query(""), query: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = write_memory(write, rid) if write else read_memory(rid, query=query)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/project")
+def project_endpoint(request: Request, name: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = set_project(name, rid) if name else get_project(rid)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/rules")
+def rules_endpoint(request: Request, add: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = add_rule(add, rid) if add else read_rules(rid)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
+
+
+@app.get("/workflow/run")
+def workflow_run_endpoint(request: Request, name: str = Query("daily_start"), message: str = Query(""), debug: bool = Query(False)):
+    rid = request_id()
+    try:
+        check_token(request)
+        result = run_workflow(name, rid, message=message)
+        return json_response({"status": result.get("status"), "version": VERSION, "result": result if debug else _summarize_capability_result(result), "request_id": rid})
+    except Exception as e:
+        return safe_error(e, rid)
 
 @app.get("/capability/registry")
 def capability_registry(request: Request):
@@ -795,6 +1025,7 @@ def capability_registry(request: Request):
                 {"id": "CAP-004.3", "name": "Apps Script Physical Write", "status": "ACTIVE"},
                 {"id": "CAP-004.4", "name": "Intelligent Document Management", "status": "ACTIVE"},
                 {"id": "CAP-004.5", "name": "Context-Aware Document Orchestration", "status": "ACTIVE"},
+                {"id": "CAP-005", "name": "Orchestrator Foundation", "status": "ACTIVE"},
             ],
             "request_id": rid,
         })
