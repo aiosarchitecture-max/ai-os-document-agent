@@ -158,6 +158,13 @@ def call_apps_script(title: str, content: str, folder_id: Optional[str], rid: st
 
     try:
         r = requests.post(APPS_SCRIPT_WEBAPP_URL, json=payload, timeout=REQUEST_TIMEOUT_SECONDS)
+        print("===== APPS SCRIPT DEBUG =====")
+    print("STATUS:", r.status_code)
+    print("CONTENT-TYPE:", r.headers.get("Content-Type"))
+    print("FINAL URL:", r.url)
+    print("BODY:")
+    print(r.text[:3000])
+    print("=============================")
         try:
             data = r.json()
         except Exception:
