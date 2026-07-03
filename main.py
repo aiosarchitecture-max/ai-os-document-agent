@@ -192,10 +192,11 @@ def call_apps_script(title: str, content: str, folder_id: Optional[str], rid: st
     }
 
     try:
-        # Google Apps Script Web Apps commonly answer /macros/s/.../exec with 302.
-        # The Python requests library follows 302 by converting POST to GET.
-        # That causes doGet() to run instead of doPost().
-        # Therefore we stop automatic redirects and repeat POST manually to Location.
+        # Google Apps Script Web Apps usually execute doPost() on the first POST to
+        # /macros/s/.../exec, then return a 302 Location pointing to
+        # script.googleusercontent.com/macros/echo?... where the response body can be read.
+        # IMPORTANT: the redirect Location must be fetched with GET, not POST.
+        # Re-POSTing to script.googleusercontent.com causes Google HTML / Page Not Found.
         first = requests.post(
             APPS_SCRIPT_WEBAPP_URL,
             json=payload,
@@ -206,14 +207,14 @@ def call_apps_script(title: str, content: str, folder_id: Optional[str], rid: st
         redirect_statuses = {301, 302, 303, 307, 308}
         if first.status_code in redirect_statuses and first.headers.get("Location"):
             redirect_url = first.headers["Location"]
-            second = requests.post(
+            second = requests.get(
                 redirect_url,
-                json=payload,
                 timeout=REQUEST_TIMEOUT_SECONDS,
-                allow_redirects=False,
+                allow_redirects=True,
             )
             result = _parse_apps_script_response(second, rid)
             result.setdefault("redirect_handled", True)
+            result.setdefault("redirect_follow_method", "GET")
             result.setdefault("initial_http_status", first.status_code)
             result.setdefault("redirect_url_host", redirect_url.split("/")[2] if "://" in redirect_url else "")
             return result
