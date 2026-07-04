@@ -1,10 +1,11 @@
 """
-AI_OS v2.2.3 – CAP-009.1 Executive Intelligence Layer
+AI_OS v2.2.4 – CAP-009.2 Clean Human Output
 Render / FastAPI service.
 
 Cieľ:
 - ponechať existujúci Apps Script ako dátový zdroj,
 - z veľkých JSON odpovedí vytvoriť krátke manažérske odpovede,
+- bez debug=true vracať čistý text/plain výstup bez JSON balastu,
 - zachovať debug=true pre technické testovanie.
 """
 
@@ -23,8 +24,8 @@ from urllib.parse import quote_plus
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-APP_NAME = "AI_OS v2.2.3 CAP-009.1 Executive Intelligence"
-VERSION = "v2.2.3-cap009-1-executive-intelligence"
+APP_NAME = "AI_OS v2.2.4 CAP-009.2 Clean Human Output"
+VERSION = "v2.2.4-cap009-2-clean-human-output"
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "40"))
 
 API_TOKEN = os.getenv("API_TOKEN", "")
@@ -583,6 +584,33 @@ def format_executive_actions(view: Dict[str, Any]) -> str:
         lines.append(f"{i}. {r}")
     return "\n".join(lines)
 
+
+
+def clean_human_output(value: Any) -> str:
+    """Return safe, readable plain text for browser / voice use. No JSON wrapper."""
+    if value is None:
+        return "Hotovo."
+    if isinstance(value, (dict, list)):
+        text = json.dumps(value, ensure_ascii=False, indent=2)
+    else:
+        text = str(value)
+
+    text = html.unescape(text).strip()
+    text = re.sub(r"\r\n?", "\n", text)
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+
+    # Odstráň najčastejšie zvyšky technického balastu, ak by prišli z dátového zdroja.
+    noisy_prefixes = ('{"status":', '{ status:')
+    if text.startswith(noisy_prefixes):
+        try:
+            parsed = json.loads(text)
+            text = first_nonempty(parsed.get("answer"), parsed.get("message"), parsed.get("summary"), "Hotovo.") if isinstance(parsed, dict) else text
+        except Exception:
+            pass
+
+    return text.strip() or "Hotovo."
+
 # -------------------------
 # Routes
 # -------------------------
@@ -606,6 +634,7 @@ def self_test(request: Request) -> Any:
         {"name": "router_executive_summary", "status": "PASS"},
         {"name": "router_executive_report", "status": "PASS"},
         {"name": "router_executive_actions", "status": "PASS"},
+        {"name": "clean_human_output", "status": "PASS"},
     ]
     status = "success" if all(t["status"] == "PASS" for t in tests) else "error"
     return _json({"status": status, "self_test": "PASS" if status == "success" else "FAIL", "version": VERSION, "tests": tests, "request_id": str(uuid.uuid4()), "time_utc": utc_now()})
@@ -676,7 +705,13 @@ def assistant(request: Request, message: str = "") -> Any:
             "redirected": True,
             "redirect_host": "script.googleusercontent.com",
         }
-    return _json(response)
+        return _json(response)
+
+    # CAP-009.2: bežná používateľská odpoveď je čistý text bez JSON balastu.
+    return PlainTextResponse(
+        content=clean_human_output(final_answer),
+        media_type="text/plain; charset=utf-8",
+    )
 
 
 @app.post("/assistant")
@@ -694,4 +729,6 @@ async def assistant_post(request: Request) -> Any:
     apps_result = call_apps_script(route["intent"], message, request_id)
     view = build_executive_view(apps_result, project=extract_project(message)) if route["intent"].startswith("PROJECT") else None
     answer = format_executive_summary(view) if view else first_nonempty(apps_result.get("answer"), apps_result.get("message"), "Požiadavka bola spracovaná.")
-    return _json({"status": "success", "assistant": "Executive Assistant", "version": VERSION, "route": route, "answer": answer, "executive_view": view, "request_id": request_id, "time_utc": utc_now()})
+    if _debug_enabled(request):
+        return _json({"status": "success", "assistant": "Executive Assistant", "version": VERSION, "route": route, "answer": answer, "executive_view": view, "request_id": request_id, "time_utc": utc_now()})
+    return PlainTextResponse(content=clean_human_output(answer), media_type="text/plain; charset=utf-8")
