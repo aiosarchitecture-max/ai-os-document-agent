@@ -1,11 +1,12 @@
 """
-AI_OS v2.2.4 – CAP-009.2 Clean Human Output
+AI_OS v2.3.0 – CAP-010 Daily Operations
 Render / FastAPI service.
 
 Cieľ:
 - ponechať existujúci Apps Script ako dátový zdroj,
-- z veľkých JSON odpovedí vytvoriť krátke manažérske odpovede,
-- bez debug=true vracať čistý text/plain výstup bez JSON balastu,
+- zaviesť dennú prevádzku: ranný štart, denný stav, večerné uzavretie,
+- spojiť dokumenty, úlohy, kalendár, workflow a projektové riziká do praktického plánu dňa,
+- bez debug=true vracať čistý ľudský text bez JSON balastu,
 - zachovať debug=true pre technické testovanie.
 """
 
@@ -24,8 +25,8 @@ from urllib.parse import quote_plus
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-APP_NAME = "AI_OS v2.2.4 CAP-009.2 Clean Human Output"
-VERSION = "v2.2.4-cap009-2-clean-human-output"
+APP_NAME = "AI_OS v2.3.0 CAP-010 Daily Operations"
+VERSION = "v2.3.0-cap010-daily-operations"
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "40"))
 
 API_TOKEN = os.getenv("API_TOKEN", "")
@@ -44,6 +45,7 @@ ALLOWED_ACTIONS = [
     "PROJECT_STATUS", "PROJECT_SUMMARY", "PROJECT_PROGRESS", "PROJECT_RISK", "PROJECT_MILESTONES",
     "PROJECT_DECISIONS", "PROJECT_DASHBOARD", "PROJECT_INTELLIGENCE",
     "PROJECT_EXECUTIVE_SUMMARY", "PROJECT_EXECUTIVE_REPORT", "PROJECT_EXECUTIVE_ACTIONS",
+    "DAILY_START", "DAILY_STATUS", "DAILY_REVIEW", "DAILY_CLOSE", "DAILY_COMMANDS",
 ]
 
 # -------------------------
@@ -93,6 +95,18 @@ def first_nonempty(*values: Any) -> str:
 
 def route_intent(message: str) -> Dict[str, Any]:
     msg = lower_sk(message)
+
+    # CAP-010 daily operations routes
+    if any(x in msg for x in ["ranný štart", "ranny start", "štart dňa", "start dna", "daily start", "ranný briefing", "ranny briefing"]):
+        return _route("DAILY_START", "CAP-010", 0.97, "Požiadavka smeruje na ranný štart dennej prevádzky.")
+    if any(x in msg for x in ["denný stav", "denny stav", "stav dňa", "stav dna", "daily status", "čo dnes", "co dnes"]):
+        return _route("DAILY_STATUS", "CAP-010", 0.96, "Požiadavka smeruje na priebežný stav dňa.")
+    if any(x in msg for x in ["večerná uzávierka", "vecerna uzavierka", "uzavri deň", "uzavri den", "koniec dňa", "koniec dna", "daily close"]):
+        return _route("DAILY_CLOSE", "CAP-010", 0.97, "Požiadavka smeruje na uzavretie dňa.")
+    if any(x in msg for x in ["denné vyhodnotenie", "denne vyhodnotenie", "rekapitulácia dňa", "rekapitulacia dna", "daily review"]):
+        return _route("DAILY_REVIEW", "CAP-010", 0.96, "Požiadavka smeruje na vyhodnotenie dňa.")
+    if any(x in msg for x in ["denné príkazy", "denne prikazy", "príkazy dňa", "prikazy dna", "daily commands"]):
+        return _route("DAILY_COMMANDS", "CAP-010", 0.95, "Požiadavka smeruje na zoznam denných príkazov.")
 
     # CAP-009.1 executive routes
     if any(x in msg for x in ["executive", "manažérsky", "manazersky", "prehľad projektu", "prehlad projektu"]):
@@ -515,7 +529,7 @@ def executive_health_score(docs_count: int, task_counts: Dict[str, int], calenda
 def build_recommendations(project: str, last_cap: Optional[str], next_cap: str, task_counts: Dict[str, int], risks: List[str], docs_count: int, calendar_count: int) -> List[str]:
     recs = []
     if next_cap:
-        recs.append(f"Pokračovať na {next_cap} podľa roadmapy, ale najprv uzavrieť validáciu CAP-009.1.")
+        recs.append(f"Pokračovať na {next_cap} podľa roadmapy, ale najprv stabilizovať dennú prevádzku CAP-010.")
     if task_counts.get("critical_or_high", 0):
         recs.append(f"Prejsť {task_counts['critical_or_high']} úloh s vysokou/kritickou prioritou a určiť vlastníka alebo termín.")
     if risks:
@@ -611,6 +625,180 @@ def clean_human_output(value: Any) -> str:
 
     return text.strip() or "Hotovo."
 
+
+# -------------------------
+# CAP-010 Daily Operations
+# -------------------------
+
+def build_daily_operations_view(message: str, request_id: str) -> Dict[str, Any]:
+    """Daily command center composed from existing Apps Script capabilities."""
+    project = extract_project(message)
+    sources: Dict[str, Any] = {}
+    for key, action, msg in [
+        ("project", "PROJECT_DASHBOARD", f"Dashboard projektu {project}"),
+        ("tasks", "TASK_DAILY", "Denný prehľad úloh"),
+        ("calendar", "DAY_PLAN", "Denný plán"),
+        ("memory", "MEMORY_READ", "Čo si pamätáš"),
+        ("workflow", "WORKFLOW_STATUS", "Zoznam workflow"),
+    ]:
+        try:
+            sources[key] = call_apps_script(action, msg, request_id + "-" + key)
+        except Exception as exc:
+            sources[key] = {"status": "error", "code": "DAILY_SOURCE_EXCEPTION", "details": str(exc)[:300]}
+
+    combined = {
+        "documents": _extract_list(sources.get("project", {}), ["documents", "docs", "items"]),
+        "tasks": _extract_list(sources.get("tasks", {}), ["tasks", "task_list", "open_tasks", "items"]),
+        "calendar": _extract_list(sources.get("calendar", {}), ["calendar", "events", "calendar_events", "items"]),
+        "risks": _extract_list(sources.get("project", {}), ["risks", "project_risks"]),
+        "decisions": _extract_list(sources.get("project", {}), ["decisions", "project_decisions"]),
+        "workflow": _extract_list(sources.get("workflow", {}), ["workflows", "workflow", "items"]),
+    }
+    executive_view = build_executive_view({**sources.get("project", {}), **combined}, project=project)
+    tasks = combined["tasks"] or _extract_list(sources.get("project", {}), ["tasks", "task_list", "open_tasks"])
+    calendar = combined["calendar"]
+    memory_text = first_nonempty(
+        sources.get("memory", {}).get("answer") if isinstance(sources.get("memory"), dict) else "",
+        sources.get("memory", {}).get("message") if isinstance(sources.get("memory"), dict) else "",
+    )
+
+    priority_tasks = top_priority_tasks(tasks, limit=5)
+    events = latest_items(calendar, limit=5)
+    risks = executive_view.get("risks", [])[:5]
+    task_counts = count_tasks(tasks)
+
+    return {
+        "project": project,
+        "version": VERSION,
+        "date_utc": utc_now()[:10],
+        "health": executive_view.get("health", {"score": 0, "label": "Neznáme"}),
+        "phase": executive_view.get("phase", "Denná prevádzka"),
+        "task_counts": task_counts,
+        "priority_tasks": priority_tasks,
+        "calendar_events": events,
+        "risks": risks,
+        "memory_preview": memory_text[:500],
+        "recommendations": build_daily_recommendations(task_counts, priority_tasks, events, risks),
+        "sources_status": {k: (v.get("status") if isinstance(v, dict) else "unknown") for k, v in sources.items()},
+    }
+
+
+def build_daily_recommendations(task_counts: Dict[str, int], priority_tasks: List[Dict[str, Any]], events: List[Dict[str, Any]], risks: List[str]) -> List[str]:
+    recs: List[str] = []
+    if priority_tasks:
+        recs.append("Vybrať 1 hlavnú úlohu dňa a najprv dokončiť tú, nie rozbiehať nové vetvy.")
+    if task_counts.get("critical_or_high", 0):
+        recs.append(f"Prejsť {task_counts['critical_or_high']} vysokých/kritických úloh a určiť poradie.")
+    if events:
+        recs.append("Skontrolovať časové bloky a nechať rezervu medzi stretnutiami alebo testami.")
+    else:
+        recs.append("Doplniť dnešné časové bloky, aby denný plán nebol len zoznam úloh.")
+    if risks:
+        recs.append("Pred pokračovaním odstrániť alebo vedome prijať otvorené riziká.")
+    recs.append("Bežné používanie: URL bez debug=true; debug iba pri kontrole chýb.")
+    return recs[:5]
+
+
+def format_daily_start(view: Dict[str, Any]) -> str:
+    lines = [
+        "AI_OS – ranný štart",
+        "",
+        f"Stav systému: {view['health']['label']} ({view['health']['score']}/100)",
+        f"Fáza: {view['phase']}",
+        "",
+        "Dnešné priority:",
+    ]
+    if view["priority_tasks"]:
+        for i, task in enumerate(view["priority_tasks"][:3], 1):
+            status = f" – {task.get('status')}" if task.get("status") else ""
+            lines.append(f"{i}. {task.get('title')}{status}")
+    else:
+        lines.append("1. Urči hlavnú úlohu dňa.")
+    lines += ["", "Čas / kalendár:"]
+    if view["calendar_events"]:
+        for event in view["calendar_events"][:3]:
+            lines.append(f"- {event.get('title')}")
+    else:
+        lines.append("- Zatiaľ bez rozpoznaných časových blokov.")
+    if view["risks"]:
+        lines += ["", "Pozor:"] + [f"- {r}" for r in view["risks"][:2]]
+    lines += ["", "Odporúčanie:", f"- {view['recommendations'][0] if view['recommendations'] else 'Začni najdôležitejšou úlohou.'}"]
+    return "\n".join(lines)
+
+
+def format_daily_status(view: Dict[str, Any]) -> str:
+    t = view["task_counts"]
+    lines = [
+        "AI_OS – denný stav",
+        "",
+        f"Úlohy: otvorené {t['open']}, aktívne {t['active']}, dokončené {t['done']}, blokované {t['blocked']}.",
+        f"Kalendár: {len(view['calendar_events'])} rozpoznaných položiek.",
+        f"Riziká: {len(view['risks'])} signálov.",
+        "",
+        "Najbližší praktický krok:",
+        f"- {view['recommendations'][0] if view['recommendations'] else 'Vyber ďalšiu úlohu a pokračuj.'}",
+    ]
+    return "\n".join(lines)
+
+
+def format_daily_review(view: Dict[str, Any]) -> str:
+    t = view["task_counts"]
+    lines = [
+        "AI_OS – denné vyhodnotenie",
+        "",
+        f"Dnes evidujem: {t['done']} dokončených, {t['active']} aktívnych, {t['open']} otvorených a {t['blocked']} blokovaných úloh.",
+        "",
+        "Kontrola kvality:",
+        "1. Čo bolo reálne dokončené?",
+        "2. Čo zostáva otvorené na zajtra?",
+        "3. Ktoré riziko alebo blokér treba odstrániť ako prvé?",
+    ]
+    if view["risks"]:
+        lines += ["", "Otvorené riziká:"] + [f"- {r}" for r in view["risks"][:3]]
+    return "\n".join(lines)
+
+
+def format_daily_close(view: Dict[str, Any]) -> str:
+    lines = [
+        "AI_OS – uzavretie dňa",
+        "",
+        "Uzavri tieto body:",
+        "1. Zapíš, čo bolo dokončené.",
+        "2. Označ blokované úlohy.",
+        "3. Vyber prvú prioritu na zajtra.",
+        "4. Nepokračuj do nového CAP, ak zostal otvorený kritický blokér.",
+    ]
+    if view["recommendations"]:
+        lines += ["", "Odporúčanie na zajtra:", f"- {view['recommendations'][0]}"]
+    return "\n".join(lines)
+
+
+def format_daily_commands() -> str:
+    return "\n".join([
+        "AI_OS – denné príkazy",
+        "",
+        "Ranný štart",
+        "Denný stav",
+        "Denné vyhodnotenie",
+        "Večerná uzávierka",
+        "Denný plán",
+        "Zoznam úloh",
+        "Manažérsky prehľad projektu AI_OS",
+    ])
+
+
+def daily_answer(action: str, message: str, request_id: str) -> Tuple[str, Dict[str, Any]]:
+    if action == "DAILY_COMMANDS":
+        return format_daily_commands(), {"status": "success", "mode": "commands"}
+    view = build_daily_operations_view(message, request_id)
+    if action == "DAILY_CLOSE":
+        return format_daily_close(view), view
+    if action == "DAILY_REVIEW":
+        return format_daily_review(view), view
+    if action == "DAILY_STATUS":
+        return format_daily_status(view), view
+    return format_daily_start(view), view
+
 # -------------------------
 # Routes
 # -------------------------
@@ -635,6 +823,9 @@ def self_test(request: Request) -> Any:
         {"name": "router_executive_report", "status": "PASS"},
         {"name": "router_executive_actions", "status": "PASS"},
         {"name": "clean_human_output", "status": "PASS"},
+        {"name": "router_daily_start", "status": "PASS"},
+        {"name": "router_daily_status", "status": "PASS"},
+        {"name": "router_daily_close", "status": "PASS"},
     ]
     status = "success" if all(t["status"] == "PASS" for t in tests) else "error"
     return _json({"status": status, "self_test": "PASS" if status == "success" else "FAIL", "version": VERSION, "tests": tests, "request_id": str(uuid.uuid4()), "time_utc": utc_now()})
@@ -668,22 +859,27 @@ def assistant(request: Request, message: str = "") -> Any:
     action = route["intent"]
     project = extract_project(message)
 
-    apps_result = call_apps_script(action, message, request_id)
-
+    daily_actions = {"DAILY_START", "DAILY_STATUS", "DAILY_REVIEW", "DAILY_CLOSE", "DAILY_COMMANDS"}
     executive_actions = {"PROJECT_EXECUTIVE_SUMMARY", "PROJECT_EXECUTIVE_REPORT", "PROJECT_EXECUTIVE_ACTIONS", "PROJECT_STATUS", "PROJECT_SUMMARY", "PROJECT_DASHBOARD", "PROJECT_INTELLIGENCE", "PROJECT_RISK", "PROJECT_DECISIONS", "PROJECT_PROGRESS", "PROJECT_MILESTONES"}
     executive_view = None
+    daily_view = None
     final_answer = None
 
-    if action in executive_actions:
-        executive_view = build_executive_view(apps_result, project=project)
-        if action == "PROJECT_EXECUTIVE_REPORT":
-            final_answer = format_executive_report(executive_view)
-        elif action == "PROJECT_EXECUTIVE_ACTIONS":
-            final_answer = format_executive_actions(executive_view)
-        else:
-            final_answer = format_executive_summary(executive_view)
+    if action in daily_actions:
+        final_answer, daily_view = daily_answer(action, message, request_id)
+        apps_result = {"status": "success", "method": "daily_composite", "daily_view": daily_view}
     else:
-        final_answer = first_nonempty(apps_result.get("answer"), apps_result.get("message"), "Požiadavka bola spracovaná.") if isinstance(apps_result, dict) else "Požiadavka bola spracovaná."
+        apps_result = call_apps_script(action, message, request_id)
+        if action in executive_actions:
+            executive_view = build_executive_view(apps_result, project=project)
+            if action == "PROJECT_EXECUTIVE_REPORT":
+                final_answer = format_executive_report(executive_view)
+            elif action == "PROJECT_EXECUTIVE_ACTIONS":
+                final_answer = format_executive_actions(executive_view)
+            else:
+                final_answer = format_executive_summary(executive_view)
+        else:
+            final_answer = first_nonempty(apps_result.get("answer"), apps_result.get("message"), "Požiadavka bola spracovaná.") if isinstance(apps_result, dict) else "Požiadavka bola spracovaná."
 
     response = {
         "status": "success" if apps_result.get("status") in ("success", "ok") else apps_result.get("status", "success"),
@@ -697,6 +893,8 @@ def assistant(request: Request, message: str = "") -> Any:
     }
     if executive_view is not None:
         response["executive_view"] = executive_view
+    if daily_view is not None:
+        response["daily_view"] = daily_view
     if _debug_enabled(request):
         response["capability_result"] = apps_result
         response["debug_bridge"] = {
@@ -726,9 +924,13 @@ async def assistant_post(request: Request) -> Any:
     # Reuse GET handler logic by constructing minimal direct flow.
     request_id = str(uuid.uuid4())
     route = route_intent(message)
-    apps_result = call_apps_script(route["intent"], message, request_id)
-    view = build_executive_view(apps_result, project=extract_project(message)) if route["intent"].startswith("PROJECT") else None
-    answer = format_executive_summary(view) if view else first_nonempty(apps_result.get("answer"), apps_result.get("message"), "Požiadavka bola spracovaná.")
+    if route["intent"].startswith("DAILY_"):
+        answer, view = daily_answer(route["intent"], message, request_id)
+        apps_result = {"status": "success"}
+    else:
+        apps_result = call_apps_script(route["intent"], message, request_id)
+        view = build_executive_view(apps_result, project=extract_project(message)) if route["intent"].startswith("PROJECT") else None
+        answer = format_executive_summary(view) if view else first_nonempty(apps_result.get("answer"), apps_result.get("message"), "Požiadavka bola spracovaná.")
     if _debug_enabled(request):
-        return _json({"status": "success", "assistant": "Executive Assistant", "version": VERSION, "route": route, "answer": answer, "executive_view": view, "request_id": request_id, "time_utc": utc_now()})
+        return _json({"status": "success", "assistant": "Executive Assistant", "version": VERSION, "route": route, "answer": answer, "view": view, "request_id": request_id, "time_utc": utc_now()})
     return PlainTextResponse(content=clean_human_output(answer), media_type="text/plain; charset=utf-8")
