@@ -8,8 +8,8 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, PlainTextResponse
 
-APP_NAME = "AI_OS v2.0 Core Stabilization"
-VERSION = "v2.0.0-core-stabilization"
+APP_NAME = "AI_OS v2.1 CAP-008 Workflow Engine"
+VERSION = "v2.1.0-cap008-workflow-engine"
 REQUEST_TIMEOUT_SECONDS = int(os.getenv("REQUEST_TIMEOUT_SECONDS", "35"))
 
 API_TOKEN = os.getenv("API_TOKEN", "")
@@ -24,7 +24,10 @@ ALLOWED_ACTIONS = [
     "MEMORY_WRITE", "MEMORY_READ", "PROJECT_SET", "PROJECT_GET", "RULE_ADD", "RULE_LIST",
     "WORKFLOW", "TASK_CREATE", "TASK_FIND", "TASK_UPDATE", "TASK_COMPLETE", "TASK_CANCEL", "TASK_LIST",
     "TASK_ACTIVE", "TASK_DAILY", "TASK_REMINDER", "TASK_DEADLINE", "CALENDAR_FIND", "CALENDAR_CREATE",
-    "CALENDAR_READ", "DAY_PLAN", "WEEK_PLAN", "MORNING_BRIEFING", "SYSTEM_STATUS"
+    "CALENDAR_READ", "DAY_PLAN", "WEEK_PLAN", "MORNING_BRIEFING", "SYSTEM_STATUS",
+    "WORKFLOW_CREATE", "WORKFLOW_FIND", "WORKFLOW_LIST", "WORKFLOW_RUN", "WORKFLOW_PAUSE",
+    "WORKFLOW_RESUME", "WORKFLOW_CANCEL", "WORKFLOW_COMPLETE", "WORKFLOW_STATUS", "WORKFLOW_HISTORY",
+    "WORKFLOW_TEMPLATE_CREATE", "WORKFLOW_TEMPLATE_RUN", "WORKFLOW_VALIDATE", "WORKFLOW_DEBUG"
 ]
 
 
@@ -92,6 +95,34 @@ def extract_project(message: str) -> str:
     return clean_text(m.group(1)) if m else ""
 
 
+def extract_workflow_name(message: str) -> str:
+    patterns = [
+        r"(?:workflow|pracovný proces|pracovny proces)\s+([A-Za-z0-9_\- .ÁÄČĎÉÍĹĽŇÓÔŔŠŤÚÝŽáäčďéíĺľňóôŕšťúýž]+?)(?:\s+(?:šablóna|sablona|template|projekt|priorita|spusti|run|stav|status|$))",
+        r"(?:spusti|vytvor|nájdi|najdi|zruš|zrus|pozastav|obnov|dokonči|dokonc)\s+(?:workflow|pracovný proces|pracovny proces)\s+(.+)$",
+    ]
+    for p in patterns:
+        m = re.search(p, message, flags=re.IGNORECASE | re.DOTALL)
+        if m:
+            return clean_text(m.group(1))
+    return ""
+
+def extract_template(message: str) -> str:
+    t = norm(message)
+    if "nový produkt" in t or "novy produkt" in t:
+        return "NEW_PRODUCT"
+    if "nový projekt" in t or "novy projekt" in t:
+        return "NEW_PROJECT"
+    if "release" in t or "nasaden" in t:
+        return "RELEASE"
+    if "audit" in t:
+        return "PROJECT_AUDIT"
+    if "denný" in t or "denny" in t or "daily" in t:
+        return "DAILY_BRIEFING"
+    if "týžden" in t or "tyzden" in t or "weekly" in t:
+        return "WEEKLY_BRIEFING"
+    return extract_after(message, [r"(?:šablóna|sablona|template)\s+(.+)$"]) or "CUSTOM"
+
+
 def extract_priority(message: str) -> str:
     t = norm(message)
     if any(x in t for x in ["kritická", "kriticka", "critical"]):
@@ -149,9 +180,40 @@ def route_message(message: str) -> Dict[str, Any]:
         return {"intent": "rule_add", "capability_id": "CAP-005", "action": "RULE_ADD", "confidence": 0.95, "payload": {"content": content}}
     if "ukáž pravid" in t or "ukaz pravid" in t:
         return {"intent": "rule_list", "capability_id": "CAP-005", "action": "RULE_LIST", "confidence": 0.94, "payload": {}}
-    if "workflow" in t or "daily_start" in t:
-        wf = extract_after(msg, [r"workflow\s+(.+)$", r"spusti workflow\s+(.+)$"]) or "daily_start"
-        return {"intent": "workflow", "capability_id": "CAP-005", "action": "WORKFLOW", "confidence": 0.90, "payload": {"workflow": wf}}
+    # CAP-008 Workflow Engine
+    if "história workflow" in t or "historia workflow" in t or "workflow history" in t:
+        return {"intent": "workflow_history", "capability_id": "CAP-008", "action": "WORKFLOW_HISTORY", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "stav workflow" in t or "status workflow" in t or "workflow status" in t:
+        return {"intent": "workflow_status", "capability_id": "CAP-008", "action": "WORKFLOW_STATUS", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "zoznam workflow" in t or "zoznam pracovných procesov" in t or "zoznam pracovnych procesov" in t or "workflow list" in t:
+        return {"intent": "workflow_list", "capability_id": "CAP-008", "action": "WORKFLOW_LIST", "confidence": 0.96, "payload": {}}
+    if "nájdi workflow" in t or "najdi workflow" in t or "workflow find" in t:
+        return {"intent": "workflow_find", "capability_id": "CAP-008", "action": "WORKFLOW_FIND", "confidence": 0.96, "payload": {"query": extract_workflow_name(msg) or msg}}
+    if "validuj workflow" in t or "over workflow" in t or "workflow validate" in t:
+        return {"intent": "workflow_validate", "capability_id": "CAP-008", "action": "WORKFLOW_VALIDATE", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "debug workflow" in t or "workflow debug" in t:
+        return {"intent": "workflow_debug", "capability_id": "CAP-008", "action": "WORKFLOW_DEBUG", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "pozastav workflow" in t or "pause workflow" in t:
+        return {"intent": "workflow_pause", "capability_id": "CAP-008", "action": "WORKFLOW_PAUSE", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "obnov workflow" in t or "resume workflow" in t:
+        return {"intent": "workflow_resume", "capability_id": "CAP-008", "action": "WORKFLOW_RESUME", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "zruš workflow" in t or "zrus workflow" in t or "cancel workflow" in t:
+        return {"intent": "workflow_cancel", "capability_id": "CAP-008", "action": "WORKFLOW_CANCEL", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "dokonči workflow" in t or "dokonc workflow" in t or "complete workflow" in t:
+        return {"intent": "workflow_complete", "capability_id": "CAP-008", "action": "WORKFLOW_COMPLETE", "confidence": 0.96, "payload": {"workflow": extract_workflow_name(msg)}}
+    if "vytvor šablónu workflow" in t or "vytvor sablonu workflow" in t or "workflow template create" in t:
+        return {"intent": "workflow_template_create", "capability_id": "CAP-008", "action": "WORKFLOW_TEMPLATE_CREATE", "confidence": 0.95, "payload": {"template": extract_template(msg), "workflow": extract_workflow_name(msg) or extract_template(msg), "message": msg}}
+    if "spusti šablónu workflow" in t or "spusti sablonu workflow" in t or "workflow template run" in t:
+        return {"intent": "workflow_template_run", "capability_id": "CAP-008", "action": "WORKFLOW_TEMPLATE_RUN", "confidence": 0.95, "payload": {"template": extract_template(msg), "workflow": extract_workflow_name(msg) or extract_template(msg), "project": extract_project(msg) or "AI_OS", "message": msg}}
+    if "spusti workflow" in t or "run workflow" in t or "daily_start" in t:
+        wf = extract_workflow_name(msg) or extract_after(msg, [r"spusti workflow\s+(.+)$", r"workflow\s+(.+)$"]) or "daily_start"
+        return {"intent": "workflow_run", "capability_id": "CAP-008", "action": "WORKFLOW_RUN", "confidence": 0.96, "payload": {"workflow": wf, "template": extract_template(msg), "project": extract_project(msg) or "AI_OS", "message": msg}}
+    if "vytvor workflow" in t or "vytvor pracovný proces" in t or "vytvor pracovny proces" in t or "workflow create" in t:
+        wf = extract_workflow_name(msg) or extract_after(msg, [r"vytvor workflow\s+(.+)$"]) or "Nový workflow"
+        return {"intent": "workflow_create", "capability_id": "CAP-008", "action": "WORKFLOW_CREATE", "confidence": 0.96, "payload": {"workflow": wf, "template": extract_template(msg), "project": extract_project(msg) or "AI_OS", "message": msg}}
+    if "workflow" in t:
+        wf = extract_workflow_name(msg) or "daily_start"
+        return {"intent": "workflow_status", "capability_id": "CAP-008", "action": "WORKFLOW_STATUS", "confidence": 0.88, "payload": {"workflow": wf}}
 
     # Task orchestration
     if "denný prehľad úloh" in t or "denny prehlad uloh" in t:
@@ -258,7 +320,7 @@ def call_apps_script(route: Dict[str, Any], original_message: str, request_id: s
 def root():
     return ok({
         "service": APP_NAME,
-        "message": "AI_OS v2.0 Core Stabilization is running.",
+        "message": "AI_OS v2.1 CAP-008 Workflow Engine is running.",
         "config": {
             "api_token_configured": bool(API_TOKEN),
             "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
@@ -311,6 +373,10 @@ def self_test(request: Request):
         "router_calendar_create": route_message("Vytvor udalosť test dnes")["action"] == "CALENDAR_CREATE",
         "router_time_plan": route_message("Denný plán")["action"] == "DAY_PLAN",
         "router_morning_briefing": route_message("Ranný briefing")["action"] == "MORNING_BRIEFING",
+        "router_workflow_create": route_message("Vytvor workflow CAP008 Test projekt AI_OS")["action"] == "WORKFLOW_CREATE",
+        "router_workflow_run": route_message("Spusti workflow CAP008 Test")["action"] == "WORKFLOW_RUN",
+        "router_workflow_status": route_message("Stav workflow CAP008 Test")["action"] == "WORKFLOW_STATUS",
+        "router_workflow_history": route_message("História workflow CAP008 Test")["action"] == "WORKFLOW_HISTORY",
     }
     for name, passed in checks.items():
         tests.append({"name": name, "status": "PASS" if passed else "FAIL"})
