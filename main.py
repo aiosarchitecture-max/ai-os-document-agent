@@ -1,9 +1,10 @@
 """
-AI_OS RESTORE CAP-009.2 FULL STABLE
+AI_OS CAP-010.2 AI Assistant Chat
 FastAPI Render main.py
 
 Cieľ:
-- obnoviť stabilný backend po poškodení čiastočnými patchmi,
+- zachovať stabilný backend CAP-009.2,
+- pridať webový chat /chat pre neprogramátora,
 - zachovať čistý ľudský výstup v bežnom režime,
 - oddeliť debug JSON režim,
 - volať Apps Script cez POST, ak je dostupný.
@@ -20,10 +21,10 @@ from typing import Any, Dict, Optional
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 
-VERSION = "v2.2.4-restore-cap0092-full-stable"
-APP_NAME = "AI_OS Restore CAP-009.2 Full Stable"
+VERSION = "v2.4.0-cap0102-ai-assistant-chat"
+APP_NAME = "AI_OS CAP-010.2 AI Assistant Chat"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
 APPS_SCRIPT_WEBAPP_URL = os.getenv("APPS_SCRIPT_WEBAPP_URL", "").strip()
@@ -245,6 +246,107 @@ def call_apps_script(message: str, request_id: str) -> Dict[str, Any]:
         return {"ok": False, "error": type(exc).__name__, "detail": str(exc), "human": local_human_answer(message)}
 
 
+
+
+# -----------------------------
+# AI Assistant Chat UI
+# -----------------------------
+
+def chat_html(default_token: str = "") -> str:
+    safe_token = str(default_token or "").replace('"', '&quot;')
+    return f"""<!doctype html>
+<html lang=\"sk\">
+<head>
+  <meta charset=\"utf-8\" />
+  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />
+  <title>AI Assistant Chat</title>
+  <style>
+    body {{ font-family: Arial, sans-serif; margin: 0; background: #f6f7f9; color: #111; }}
+    .wrap {{ max-width: 900px; margin: 0 auto; padding: 20px; }}
+    .card {{ background: white; border: 1px solid #ddd; border-radius: 12px; padding: 16px; box-shadow: 0 2px 8px rgba(0,0,0,.05); }}
+    h1 {{ font-size: 22px; margin: 0 0 8px; }}
+    .muted {{ color: #666; font-size: 13px; }}
+    label {{ display:block; margin-top: 12px; font-weight: bold; }}
+    input, textarea {{ width: 100%; box-sizing: border-box; padding: 10px; border: 1px solid #bbb; border-radius: 8px; font-size: 15px; }}
+    textarea {{ min-height: 110px; resize: vertical; }}
+    button {{ margin-top: 12px; padding: 10px 16px; border: 0; border-radius: 8px; background: #111; color: white; cursor: pointer; font-size: 15px; }}
+    button:disabled {{ background: #999; cursor: wait; }}
+    .row {{ display: flex; gap: 8px; flex-wrap: wrap; }}
+    .row button {{ background: #444; }}
+    .answer {{ white-space: pre-wrap; background: #fafafa; border: 1px solid #ddd; border-radius: 8px; padding: 12px; min-height: 120px; margin-top: 12px; }}
+    .error {{ color: #b00020; }}
+    .ok {{ color: #0a6; }}
+  </style>
+</head>
+<body>
+  <div class=\"wrap\">
+    <div class=\"card\">
+      <h1>AI Assistant Chat</h1>
+      <div class=\"muted\">Jednoduché textové rozhranie pre AI_OS. Bežný výstup je ľudský text, nie JSON.</div>
+
+      <label for=\"token\">Token</label>
+      <input id=\"token\" type=\"password\" value=\"{safe_token}\" placeholder=\"Vlož API_TOKEN\" />
+
+      <label for=\"message\">Správa pre asistenta</label>
+      <textarea id=\"message\" placeholder=\"Napíš požiadavku po slovensky...\"></textarea>
+
+      <div class=\"row\">
+        <button onclick=\"sendMessage()\" id=\"sendBtn\">Odoslať</button>
+        <button onclick=\"fillExample('Ranný štart')\">Ranný štart</button>
+        <button onclick=\"fillExample('Manažérsky prehľad projektu AI_OS')\">Manažérsky prehľad</button>
+        <button onclick=\"fillExample('Executive akcie projektu AI_OS')\">Executive akcie</button>
+      </div>
+
+      <label>Odpoveď</label>
+      <div id=\"answer\" class=\"answer\">Tu sa zobrazí odpoveď asistenta.</div>
+      <div class=\"muted\" style=\"margin-top:10px\">Debug režim testuj samostatne cez /assistant?debug=true.</div>
+    </div>
+  </div>
+
+<script>
+  const tokenInput = document.getElementById('token');
+  const savedToken = localStorage.getItem('AI_OS_API_TOKEN');
+  if (!tokenInput.value && savedToken) tokenInput.value = savedToken;
+
+  function fillExample(text) {{
+    document.getElementById('message').value = text;
+  }}
+
+  async function sendMessage() {{
+    const btn = document.getElementById('sendBtn');
+    const answer = document.getElementById('answer');
+    const token = tokenInput.value.trim();
+    const message = document.getElementById('message').value.trim();
+    if (!token) {{ answer.innerHTML = '<span class=\"error\">Chýba token.</span>'; return; }}
+    if (!message) {{ answer.innerHTML = '<span class=\"error\">Chýba správa.</span>'; return; }}
+    localStorage.setItem('AI_OS_API_TOKEN', token);
+    btn.disabled = true;
+    answer.textContent = 'Spracúvam...';
+    try {{
+      const resp = await fetch('/assistant', {{
+        method: 'POST',
+        headers: {{ 'Content-Type': 'application/json' }},
+        body: JSON.stringify({{ token, message }})
+      }});
+      const text = await resp.text();
+      answer.textContent = text || 'Bez odpovede.';
+      if (!resp.ok) answer.classList.add('error'); else answer.classList.remove('error');
+    }} catch (err) {{
+      answer.textContent = 'Chyba spojenia: ' + err;
+      answer.classList.add('error');
+    }} finally {{
+      btn.disabled = false;
+    }}
+  }}
+
+  document.getElementById('message').addEventListener('keydown', function(e) {{
+    if (e.ctrlKey && e.key === 'Enter') sendMessage();
+  }});
+</script>
+</body>
+</html>"""
+
+
 # -----------------------------
 # Routes
 # -----------------------------
@@ -265,6 +367,17 @@ def root(request: Request):
 def root_head():
     return PlainTextResponse("", status_code=200)
 
+
+
+
+@app.get("/chat")
+def chat_page(request: Request):
+    token = request.query_params.get("token") or ""
+    return HTMLResponse(chat_html(token))
+
+@app.head("/chat")
+def chat_head():
+    return PlainTextResponse("", status_code=200)
 
 @app.get("/self-test")
 def self_test(request: Request):
