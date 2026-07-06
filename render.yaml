@@ -5,16 +5,4 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
-    envVars:
-      - key: PYTHON_VERSION
-        value: 3.11.9
-      - key: REQUEST_TIMEOUT_SECONDS
-        value: "25"
-      - key: API_TOKEN
-        sync: false
-      - key: APPS_SCRIPT_WEBAPP_URL
-        sync: false
-      - key: APPS_SCRIPT_SECRET
-        sync: false
-      - key: AI_OS_ROOT_FOLDER_ID
-        sync: false
+    autoDeploy: true
