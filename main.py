@@ -30,7 +30,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.8.2-cap014-transport-security-fix"
+VERSION = "v2.10.0-cap016-quality-workflow"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -39,6 +39,11 @@ APPS_SCRIPT_SECRET = os.getenv("APPS_SCRIPT_SECRET", "").strip()
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
 GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
+
+# CAP-015 — Reviewer Agent: nezávislé volanie Claude API (mimo Claude.ai konverzácie).
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
+REVIEWER_MODEL = os.getenv("REVIEWER_MODEL", "claude-haiku-4-5-20251001").strip()
+ANTHROPIC_API_URL = "https://api.anthropic.com/v1/messages"
 
 # =====================================================================
 # CAP-014 — MCP server sa musí vytvoriť SKÔR ako FastAPI aplikácia, lebo
@@ -171,6 +176,22 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
         "description": "Prečíta AI_OS_MIGRATION_LOG (audit trail všetkých presunov/trash/premenovaní).",
         "method": "GET",
         "path": "/files/migration-log?token=API_TOKEN",
+        "risk": "low",
+        "requires_human_approval": False,
+    },
+    {
+        "name": "aios_review_document",
+        "description": "CAP-016 Quality Workflow — QA + Information Architect kontrola dokumentu (súlad so štandardom + správne umiestnenie/duplicity). Iba čítanie, žiadny zápis.",
+        "method": "POST",
+        "path": "/documents/review?token=API_TOKEN",
+        "risk": "low",
+        "requires_human_approval": False,
+    },
+    {
+        "name": "aios_quality_log",
+        "description": "Prečíta AI_OS_QUALITY_LOG (história Quality Workflow úloh: Task ID, stav, skóre, výhrady).",
+        "method": "GET",
+        "path": "/documents/quality-log?token=API_TOKEN",
         "risk": "low",
         "requires_human_approval": False,
     },
@@ -425,6 +446,173 @@ def read_migration_log() -> Dict[str, Any]:
     return post_to_apps_script("READ_MIGRATION_LOG", {})
 
 
+def read_quality_log() -> Dict[str, Any]:
+    return post_to_apps_script("READ_QUALITY_LOG", {})
+
+
+def read_document_content(file_id: str) -> Dict[str, Any]:
+    return post_to_apps_script("READ_DOCUMENT_CONTENT", {"fileId": file_id})
+
+
+# =====================================================================
+# CAP-015 — Reviewer Agent
+# Nezávislé LLM volanie, oddelené od Writer agenta (Claude v claude.ai
+# konverzácii). Reviewer NEMÁ prístup k move/trash/rename nástrojom —
+# vidí iba obsah dokumentu a kontrolný zoznam z AI_OS_DOCUMENTATION_STANDARD.
+# =====================================================================
+REVIEWER_SYSTEM_PROMPT = """Si nezávislý Reviewer Agent v systéme AI_OS. Tvojou úlohou je skontrolovať
+jeden dokument v dvoch rovinách naraz — ako QA Reviewer (súlad so štandardom) aj ako Information
+Architect (patrí dokument tam, kde je?). NEMÁŠ oprávnenie nič meniť, presúvať ani mazať — iba hodnotíš.
+
+ROVINA 1 — QA Reviewer (súlad s AI_OS_DOCUMENTATION_STANDARD_v1.0):
+1. Štruktúra — dokument má jasnú, logickú štruktúru primeranú svojmu typu.
+2. Hlavička/identifikácia — ak ide o Governance-typ dokument, má byť jasné: názov, verzia, stav, účel.
+3. Povinné časti — Purpose/Účel, hlavný obsah, súvisiace dokumenty (ak relevantné).
+4. Konzistentnosť terminológie — používa rovnaké pojmy ako zvyšok AI_OS (AI_OS_, Capability, Governance...).
+5. Referencie — odkazy na iné dokumenty znejú rozumne (nie zjavne vymyslené).
+6. Jasnosť — text je zrozumiteľný, bez vnútorných rozporov.
+7. Verziovanie — formát Major.Minor (napr. v1.0, v2.0), žiadne "(1)"/"(2)" prípony.
+
+ROVINA 2 — Information Architect (informačná architektúra):
+8. Patrí tento dokument koncepčne do priečinka/kategórie, ktorá je uvedená v kontexte nižšie?
+9. Neduplikuje tento dokument tému, ktorá by mala mať jeden kanonický zdroj?
+10. Ak sa téma prekrýva s niečím iným, navrhni MERGE/ARCHIVE/REVIEW_REQUIRED (podľa Decision Rules charty).
+
+Ku každej nájdenej výhrade priraď severity: LOW, MEDIUM, HIGH, alebo CRITICAL.
+CRITICAL = zjavná duplicita alebo úplne nesprávne umiestnenie. HIGH = chýbajúca povinná časť.
+MEDIUM = nekonzistentné pomenovanie/verziovanie. LOW = štylistická drobnosť.
+
+Odpovedz VÝHRADNE vo formáte JSON (žiadny text mimo JSON):
+{
+  "status": "PASS" alebo "FAIL",
+  "score_percent": číslo 0-100,
+  "issues": [{"description": "...", "severity": "LOW|MEDIUM|HIGH|CRITICAL", "dimension": "QA|ARCHITECT"}],
+  "summary": "jedna veta zhrnutia"
+}
+
+PASS iba ak score >= 90 A žiadna výhrada nemá severity CRITICAL. Buď konkrétny — Writer agent
+podľa výhrad dokument opraví alebo presunie. Neopakuj sa, nehodnoť štylistiku nad rámec bodu 6."""
+
+
+async def call_anthropic_reviewer(document_title: str, document_content: str, folder_context: str = "") -> Dict[str, Any]:
+    if not ANTHROPIC_API_KEY:
+        return {
+            "status": "error",
+            "human": "ANTHROPIC_API_KEY nie je nastavený na serveri — Reviewer Agent nemôže bežať.",
+        }
+    context_line = f"\n\nAktuálne umiestnenie (priečinok): {folder_context}" if folder_context else ""
+    user_message = f"Názov dokumentu: {document_title}{context_line}\n\nObsah dokumentu:\n\n{document_content}"
+    try:
+        resp = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": REVIEWER_MODEL,
+                "max_tokens": 1500,
+                "system": REVIEWER_SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": user_message}],
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "human": f"Reviewer API volanie zlyhalo: {exc}"}
+
+    text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+    raw_text = "\n".join(text_blocks).strip()
+    try:
+        cleaned = raw_text.replace("```json", "").replace("```", "").strip()
+        verdict = json.loads(cleaned)
+    except Exception:  # noqa: BLE001
+        return {
+            "status": "error",
+            "human": "Reviewer vrátil odpoveď, ktorú sa nepodarilo spracovať ako JSON.",
+            "raw_response": raw_text,
+        }
+
+    verdict["reviewer_model"] = REVIEWER_MODEL
+    return verdict
+
+
+def log_quality_task(
+    task_id: str,
+    document_title: str,
+    action: str,
+    workflow_status: str,
+    score_percent: Any,
+    severity: str,
+    issues: List[str],
+) -> None:
+    post_to_apps_script(
+        "LOG_QUALITY_TASK",
+        {
+            "taskId": task_id,
+            "documentTitle": document_title,
+            "action": action,
+            "workflowStatus": workflow_status,
+            "scorePercent": score_percent,
+            "severity": severity,
+            "issues": issues,
+        },
+    )
+
+
+def _highest_severity(issues: List[Dict[str, Any]]) -> str:
+    order = {"CRITICAL": 4, "HIGH": 3, "MEDIUM": 2, "LOW": 1}
+    if not issues:
+        return "NONE"
+    best = max(issues, key=lambda i: order.get(str(i.get("severity", "LOW")).upper(), 0))
+    return str(best.get("severity", "LOW")).upper()
+
+
+async def review_document(file_id: str, folder_context: str = "", action: str = "REVIEW") -> Dict[str, Any]:
+    task_id = f"QW-{uuid.uuid4().hex[:8].upper()}"
+    doc_result = read_document_content(file_id)
+    doc_data = doc_result.get("data") if isinstance(doc_result.get("data"), dict) else {}
+    if doc_data.get("status") != "success":
+        return {
+            "status": "error",
+            "task_id": task_id,
+            "human": doc_data.get("human") or "Nepodarilo sa prečítať obsah dokumentu na kontrolu.",
+        }
+    title = doc_data.get("fileName", "")
+    content = doc_data.get("content", "")
+    if not content.strip():
+        return {"status": "error", "task_id": task_id, "human": "Dokument je prázdny, nie je čo kontrolovať."}
+
+    verdict = await call_anthropic_reviewer(title, content, folder_context)
+    if verdict.get("status") == "error":
+        return {**verdict, "task_id": task_id}
+
+    issues = verdict.get("issues", [])
+    severity = _highest_severity(issues)
+    workflow_status = "APPROVED" if verdict.get("status") == "PASS" else "REVISION_REQUIRED"
+
+    issue_texts = [
+        f"[{i.get('dimension', '?')}/{i.get('severity', '?')}] {i.get('description', '')}" for i in issues
+    ]
+    log_quality_task(
+        task_id=task_id,
+        document_title=title,
+        action=action,
+        workflow_status=workflow_status,
+        score_percent=verdict.get("score_percent", ""),
+        severity=severity,
+        issues=issue_texts,
+    )
+
+    verdict["file_id"] = file_id
+    verdict["document_title"] = title
+    verdict["task_id"] = task_id
+    verdict["workflow_status"] = workflow_status
+    return verdict
+
+
 def apps_script_result_to_response(result: Dict[str, Any], debug: bool) -> Any:
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
     human = str(data.get("human") or result.get("message") or result.get("code") or "Operácia bola spracovaná.")
@@ -531,6 +719,32 @@ def files_migration_log(request: Request, token: Optional[str] = None):
     return apps_script_result_to_response(result, debug)
 
 
+@app.post("/documents/review")
+async def documents_review(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    file_id = str(body.get("file_id") or "").strip()
+    folder_context = str(body.get("folder_context") or "").strip()
+    if not file_id:
+        return plain_or_json({"status": "error", "human": "Chýba file_id.", "version": VERSION}, debug)
+    verdict = await review_document(file_id, folder_context)
+    return plain_or_json({**verdict, "version": VERSION, "time_utc": utc_now()}, debug)
+
+
+@app.get("/documents/quality-log")
+def documents_quality_log(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    result = read_quality_log()
+    return apps_script_result_to_response(result, debug)
+
+
 # =====================================================================
 # CAP-014 — MCP server (skutočné pripojenie pre Claude a iné MCP-kompatibilné
 # AI modely). Nástroje volajú presne tú istú logiku ako REST endpointy vyššie,
@@ -610,6 +824,30 @@ def aios_rename_file(file_id: str, new_title: str, confirm_id: str) -> dict:
 def aios_migration_log() -> dict:
     """Prečíta AI_OS_MIGRATION_LOG — audit trail všetkých doteraz vykonaných operácií."""
     return read_migration_log()
+
+
+@mcp.tool()
+def aios_quality_log() -> dict:
+    """Prečíta AI_OS_QUALITY_LOG — štruktúrovaný história všetkých Quality Workflow úloh (Task ID, stav, skóre, výhrady)."""
+    return read_quality_log()
+
+
+@mcp.tool()
+async def aios_review_document(file_id: str, folder_context: str = "") -> dict:
+    """
+    Reviewer + Information Architect Agent (CAP-016 Quality Workflow): nezávisle skontroluje dokument
+    v dvoch rovinách naraz — (1) súlad s AI_OS_DOCUMENTATION_STANDARD_v1.0, (2) či dokument patrí
+    do uvedeného priečinka a či neduplikuje inú tému. Volá SAMOSTATNÝ Claude model (nie Writer agenta
+    v tejto konverzácii) — je to skutočná druhá "hlava", nie sebakontrola.
+
+    file_id: Google Drive ID dokumentu na kontrolu
+    folder_context: voliteľné meno/cesta priečinka, kde sa dokument nachádza (pre Architect kontrolu)
+
+    Vráti PASS/FAIL, task_id, workflow_status (APPROVED/REVISION_REQUIRED), skóre a výhrady so
+    závažnosťou (LOW/MEDIUM/HIGH/CRITICAL). Každé volanie sa automaticky zapíše do AI_OS_QUALITY_LOG.
+    Nemá prístup k move/trash/rename — iba číta a hodnotí.
+    """
+    return await review_document(file_id, folder_context)
 
 
 # Namontuje MCP server na /mcp (Streamable HTTP transport — rovnaký druh
