@@ -28,8 +28,9 @@ import requests
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.8.1-cap014-mcp-lifespan-fix"
+VERSION = "v2.8.2-cap014-transport-security-fix"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -46,6 +47,10 @@ GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
 # životného cyklu (lifespan) samotnej FastAPI aplikácie. Bez tohto prepojenia
 # nastáva chyba "Task group is not initialized. Make sure to use run()."
 # =====================================================================
+# Render automaticky nastavuje RENDER_EXTERNAL_HOSTNAME pre každú službu —
+# vďaka tomu funguje ochrana proti DNS rebinding aj bez ručného zadávania URL.
+PUBLIC_HOSTNAME = os.getenv("RENDER_EXTERNAL_HOSTNAME", "ai-os-document-agent.onrender.com").strip()
+
 mcp = FastMCP(
     name="ai_os_orchestrator",
     instructions=(
@@ -54,6 +59,20 @@ mcp = FastMCP(
         "confirm_id (napr. z AI_OS_AGENT_BRIEF alebo Reorganization Package). "
         "Nikdy tieto tri operácie nevolaj z vlastnej iniciatívy bez explicitného "
         "schválenia Daniela."
+    ),
+    transport_security=TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            PUBLIC_HOSTNAME,
+            f"{PUBLIC_HOSTNAME}:*",
+            "localhost:*",
+            "127.0.0.1:*",
+        ],
+        allowed_origins=[
+            f"https://{PUBLIC_HOSTNAME}",
+            "https://claude.ai",
+            "http://localhost:*",
+        ],
     ),
 )
 
