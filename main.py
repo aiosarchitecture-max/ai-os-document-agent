@@ -20,6 +20,7 @@ import json
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -28,7 +29,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 
-VERSION = "v2.8.0-cap014-file-operations-bridge"
+VERSION = "v2.8.1-cap014-mcp-lifespan-fix"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -38,7 +39,42 @@ REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
 GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
 
-app = FastAPI(title=APP_NAME, version=VERSION)
+# =====================================================================
+# CAP-014 — MCP server sa musí vytvoriť SKÔR ako FastAPI aplikácia, lebo
+# jeho "session manager" (vnútorný mechanizmus, ktorý drží spojenia so
+# vzdialenými MCP klientmi ako Claude) sa musí naštartovať v rámci
+# životného cyklu (lifespan) samotnej FastAPI aplikácie. Bez tohto prepojenia
+# nastáva chyba "Task group is not initialized. Make sure to use run()."
+# =====================================================================
+mcp = FastMCP(
+    name="ai_os_orchestrator",
+    instructions=(
+        "Nástroje AI_OS Orchestrátora Daniela Valušiaka. Pred volaním aios_move_file, "
+        "aios_trash_file alebo aios_rename_file vždy over, že existuje schválený "
+        "confirm_id (napr. z AI_OS_AGENT_BRIEF alebo Reorganization Package). "
+        "Nikdy tieto tri operácie nevolaj z vlastnej iniciatívy bez explicitného "
+        "schválenia Daniela."
+    ),
+)
+
+# Oprava dvojitej cesty: bez tohto by FastMCP interne pridal vlastnú "/mcp"
+# cestu navyše k tej, na ktorú ho montujeme nižšie (app.mount("/mcp", ...)),
+# čím by vznikla neplatná "/mcp/mcp".
+try:
+    mcp.settings.streamable_http_path = "/"
+except Exception:
+    pass
+
+
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    # Naštartuje MCP session manager spolu s FastAPI aplikáciou a korektne
+    # ho ukončí pri vypnutí (napr. pri redeploy na Render).
+    async with mcp.session_manager.run():
+        yield
+
+
+app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
@@ -481,25 +517,12 @@ def files_migration_log(request: Request, token: Optional[str] = None):
 # AI modely). Nástroje volajú presne tú istú logiku ako REST endpointy vyššie,
 # takže sa správanie nikde neduplikuje a nerozchádza.
 # =====================================================================
-mcp = FastMCP(
-    name="ai_os_orchestrator",
-    instructions=(
-        "Nástroje AI_OS Orchestrátora Daniela Valušiaka. Pred volaním aios_move_file, "
-        "aios_trash_file alebo aios_rename_file vždy over, že existuje schválený "
-        "confirm_id (napr. z AI_OS_AGENT_BRIEF alebo Reorganization Package). "
-        "Nikdy tieto tri operácie nevolaj z vlastnej iniciatívy bez explicitného "
-        "schválenia Daniela."
-    ),
-)
-
-# Oprava dvojitej cesty: FastMCP by inak interne pridal vlastnú "/mcp" cestu
-# navyše k tej, na ktorú ho montujeme nižšie (app.mount("/mcp", ...)), čím by
-# vznikla neplatná "/mcp/mcp". Nastavením na koreň "/" zabezpečíme, že vonkajšia
-# adresa https://.../mcp bude presne tá, na ktorú sa Claude pripája.
-try:
-    mcp.settings.streamable_http_path = "/"
-except Exception:
-    pass
+# =====================================================================
+# CAP-014 — MCP nástroje (objekt "mcp" je už vytvorený na začiatku súboru,
+# spolu s prepojením na lifespan FastAPI aplikácie). Nástroje tu volajú
+# presne tú istú logiku ako REST endpointy vyššie, takže sa správanie
+# nikde neduplikuje a nerozchádza.
+# =====================================================================
 
 
 @mcp.tool()
