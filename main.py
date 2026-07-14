@@ -492,6 +492,15 @@ mcp = FastMCP(
     ),
 )
 
+# Oprava dvojitej cesty: FastMCP by inak interne pridal vlastnú "/mcp" cestu
+# navyše k tej, na ktorú ho montujeme nižšie (app.mount("/mcp", ...)), čím by
+# vznikla neplatná "/mcp/mcp". Nastavením na koreň "/" zabezpečíme, že vonkajšia
+# adresa https://.../mcp bude presne tá, na ktorú sa Claude pripája.
+try:
+    mcp.settings.streamable_http_path = "/"
+except Exception:
+    pass
+
 
 @mcp.tool()
 def aios_boot() -> dict:
