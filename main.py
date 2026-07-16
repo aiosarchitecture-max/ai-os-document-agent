@@ -16,6 +16,7 @@ Bezpečnostné pravidlo:
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -30,7 +31,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.10.0-cap016-quality-workflow"
+VERSION = "v2.11.0-cap017-github-direct-write"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -39,6 +40,13 @@ APPS_SCRIPT_SECRET = os.getenv("APPS_SCRIPT_SECRET", "").strip()
 REQUEST_TIMEOUT_SECONDS = float(os.getenv("REQUEST_TIMEOUT_SECONDS", "60"))
 AI_OS_ROOT_FOLDER_ID = os.getenv("AI_OS_ROOT_FOLDER_ID", "").strip()
 GITHUB_REPO_URL = os.getenv("GITHUB_REPO_URL", "").strip()
+
+# CAP-017 — GitHub Direct Write Bridge: vlastný token namiesto cudzej OAuth appky,
+# ktorá mala nedostatočný scope na zápis ("403 Resource not accessible by integration").
+GITHUB_PAT = os.getenv("GITHUB_PAT", "").strip()
+GITHUB_OWNER = os.getenv("GITHUB_OWNER", "aiosarchitecture-max").strip()
+GITHUB_REPO = os.getenv("GITHUB_REPO", "ai-os-document-agent").strip()
+GITHUB_API_BASE = "https://api.github.com"
 
 # CAP-015 — Reviewer Agent: nezávislé volanie Claude API (mimo Claude.ai konverzácie).
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
@@ -103,10 +111,10 @@ app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
     "version": VERSION,
-    "stage": "CAP-014 MCP Bridge & File Operations",
-    "last_stable_cap": "CAP-012.5",
-    "current_cap": "CAP-014",
-    "current_task": "Priame MCP pripojenie pre Claude + reálne presuny/premenovania/trash súborov v Google Drive.",
+    "stage": "CAP-017 GitHub Direct Write Bridge",
+    "last_stable_cap": "CAP-016",
+    "current_cap": "CAP-017",
+    "current_task": "Priamy zápis do GitHub repozitára cez vlastný PAT, nezávisle od cudzej OAuth appky.",
     "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
     "apps_script_configured": bool(APPS_SCRIPT_WEBAPP_URL),
     "github_repo_url": GITHUB_REPO_URL,
@@ -194,6 +202,14 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
         "path": "/documents/quality-log?token=API_TOKEN",
         "risk": "low",
         "requires_human_approval": False,
+    },
+    {
+        "name": "aios_github_write_file",
+        "description": "CAP-017 — Priamy zápis súboru do GitHub repozitára cez vlastný token servera (nezávisle od Claude GitHub konektora).",
+        "method": "POST",
+        "path": "/github/write-file?token=API_TOKEN",
+        "risk": "high",
+        "requires_human_approval": True,
     },
 ]
 
@@ -448,6 +464,62 @@ def read_migration_log() -> Dict[str, Any]:
 
 def read_quality_log() -> Dict[str, Any]:
     return post_to_apps_script("READ_QUALITY_LOG", {})
+
+
+# =====================================================================
+# CAP-017 — GitHub Direct Write Bridge
+# Rieši "403 Resource not accessible by integration" z cudzej OAuth appky
+# (Claude Github MCP Connector) tak, že namiesto nej používa vlastný,
+# plne kontrolovaný Personal Access Token (GITHUB_PAT) s explicitným
+# oprávnením "Contents: Read and write" iba pre tento jeden repozitár.
+# =====================================================================
+
+
+def _github_headers() -> Dict[str, str]:
+    return {
+        "Authorization": f"Bearer {GITHUB_PAT}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+
+def github_get_file_sha(path: str) -> Optional[str]:
+    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
+    resp = requests.get(url, headers=_github_headers(), timeout=30.0)
+    if resp.status_code == 200:
+        return resp.json().get("sha")
+    return None
+
+
+def github_write_file(path: str, content: str, commit_message: str) -> Dict[str, Any]:
+    if not GITHUB_PAT:
+        return {
+            "status": "error",
+            "human": "GITHUB_PAT nie je nastavený na serveri — priamy zápis do GitHubu nie je možný.",
+        }
+    existing_sha = github_get_file_sha(path)
+    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
+    body: Dict[str, Any] = {
+        "message": commit_message,
+        "content": base64.b64encode(content.encode("utf-8")).decode("ascii"),
+        "branch": "main",
+    }
+    if existing_sha:
+        body["sha"] = existing_sha
+    try:
+        resp = requests.put(url, headers=_github_headers(), json=body, timeout=30.0)
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "human": f"Zápis do GitHubu zlyhal: {exc}"}
+    commit_sha = (data.get("commit") or {}).get("sha", "")
+    return {
+        "status": "success",
+        "human": f"Zapísané do GitHubu: {path} (commit {commit_sha[:8]})",
+        "path": path,
+        "commit_sha": commit_sha,
+        "html_url": (data.get("content") or {}).get("html_url", ""),
+    }
 
 
 def read_document_content(file_id: str) -> Dict[str, Any]:
@@ -745,6 +817,24 @@ def documents_quality_log(request: Request, token: Optional[str] = None):
     return apps_script_result_to_response(result, debug)
 
 
+@app.post("/github/write-file")
+async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    path = str(body.get("path") or "").strip()
+    content = body.get("content")
+    commit_message = str(body.get("commit_message") or f"Update {path}").strip()
+    if not path or content is None:
+        return plain_or_json({"status": "error", "human": "Chýba path alebo content.", "version": VERSION}, debug)
+    result = github_write_file(path, content, commit_message)
+    return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
+
+
 # =====================================================================
 # CAP-014 — MCP server (skutočné pripojenie pre Claude a iné MCP-kompatibilné
 # AI modely). Nástroje volajú presne tú istú logiku ako REST endpointy vyššie,
@@ -830,6 +920,21 @@ def aios_migration_log() -> dict:
 def aios_quality_log() -> dict:
     """Prečíta AI_OS_QUALITY_LOG — štruktúrovaný história všetkých Quality Workflow úloh (Task ID, stav, skóre, výhrady)."""
     return read_quality_log()
+
+
+@mcp.tool()
+def aios_github_write_file(path: str, content: str, commit_message: str = "") -> dict:
+    """
+    CAP-017 — Priamy zápis súboru do GitHub repozitára (aiosarchitecture-max/ai-os-document-agent,
+    branch main) cez vlastný Personal Access Token servera, nezávisle od Claude GitHub konektora.
+    Použi na nahranie main.py/apps_script_code.gs/README a pod. priamo z tejto konverzácie.
+
+    path: cesta v repozitári (napr. "main.py", "README.md")
+    content: celý nový obsah súboru (kompletný, nie patch — podľa SMERNICA 10/10)
+    commit_message: voliteľná správa commitu
+    """
+    msg = commit_message or f"Update {path} (cez AI_OS Orchestrator)"
+    return github_write_file(path, content, msg)
 
 
 @mcp.tool()
