@@ -31,7 +31,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.12.0-cap018-researcher-web-search"
+VERSION = "v2.12.1-cap018-multi-provider-researcher"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -52,7 +52,14 @@ GITHUB_API_BASE = "https://api.github.com"
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
 YOUCOM_API_KEY = os.getenv("YOUCOM_API_KEY", "").strip()
+
+# Voľba "mozgu" Bádateľa: anthropic (platené) / gemini (zadarmo) / groq (zadarmo)
+RESEARCHER_PROVIDER = os.getenv("RESEARCHER_PROVIDER", "anthropic").strip().lower()
 RESEARCHER_MODEL = os.getenv("RESEARCHER_MODEL", "claude-haiku-4-5-20251001").strip()
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "").strip()
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash").strip()
+GROQ_API_KEY = os.getenv("GROQ_API_KEY", "").strip()
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile").strip()
 
 # Jednoduchý počítadlo spotreby Serperu v pamäti servera (resetuje sa mesačne,
 # aj pri reštarte servera - to je v poriadku, je to len preventívna poistka,
@@ -122,10 +129,10 @@ app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
     "version": VERSION,
-    "stage": "CAP-018 Bádateľ (Researcher) - Web Search",
-    "last_stable_cap": "CAP-017",
-    "current_cap": "CAP-018",
-    "current_task": "Dvojité vyhľadávanie webu (Serper primárny, You.com záložný) s preventívnym prepínaním.",
+    "stage": "CAP-018 Bádateľ (Researcher) - Multi-Provider",
+    "last_stable_cap": "CAP-018",
+    "current_cap": "CAP-018.1",
+    "current_task": "Bádateľ vie použiť Anthropic, Gemini (zadarmo) alebo Groq (zadarmo) podľa RESEARCHER_PROVIDER.",
     "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
     "apps_script_configured": bool(APPS_SCRIPT_WEBAPP_URL),
     "github_repo_url": GITHUB_REPO_URL,
@@ -224,7 +231,7 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
     },
     {
         "name": "aios_research",
-        "description": "CAP-018 Bádateľ — vyhľadá tému na webe (Serper + You.com záložný) a vráti zhustený súhrn. Iba čítanie webu, žiadny zápis do AI_OS.",
+        "description": "CAP-018 Bádateľ — vyhľadá tému na webe (Serper + You.com záložný) a vráti zhustený súhrn cez zvolený model (Anthropic/Gemini/Groq). Iba čítanie webu, žiadny zápis do AI_OS.",
         "method": "POST",
         "path": "/research?token=API_TOKEN",
         "risk": "low",
@@ -704,15 +711,107 @@ async def call_anthropic_researcher(topic: str, search_results: List[Dict[str, s
 
     text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
     raw_text = "\n".join(text_blocks).strip()
+    parsed = _parse_researcher_json(raw_text)
+    if parsed is None:
+        return {"status": "error", "human": "Bádateľ vrátil odpoveď, ktorú sa nepodarilo spracovať.", "raw": raw_text}
+    parsed["status"] = "success"
+    parsed["researcher_model"] = f"anthropic:{RESEARCHER_MODEL}"
+    return parsed
+
+
+async def call_gemini_researcher(topic: str, search_results: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Zadarmo alternatíva (Google AI Studio free tier)."""
+    if not GEMINI_API_KEY:
+        return {"status": "error", "human": "GEMINI_API_KEY nie je nastavený."}
+    results_text = "\n\n".join(
+        f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  {r.get('link', '')}" for r in search_results
+    )
+    user_message = f"Téma: {topic}\n\nVýsledky vyhľadávania:\n\n{results_text}"
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent"
+    try:
+        resp = requests.post(
+            url,
+            headers={"x-goog-api-key": GEMINI_API_KEY, "Content-Type": "application/json"},
+            json={
+                "system_instruction": {"parts": [{"text": BADATEL_SYSTEM_PROMPT}]},
+                "contents": [{"role": "user", "parts": [{"text": user_message}]}],
+                "generationConfig": {"responseMimeType": "application/json"},
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "human": f"Gemini API volanie zlyhalo: {exc}"}
+
+    try:
+        raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
+    except (KeyError, IndexError):
+        return {"status": "error", "human": "Gemini vrátil neočakávanú odpoveď.", "raw": str(data)[:500]}
+
+    parsed = _parse_researcher_json(raw_text)
+    if parsed is None:
+        return {"status": "error", "human": "Bádateľ (Gemini) vrátil odpoveď, ktorú sa nepodarilo spracovať.", "raw": raw_text}
+    parsed["status"] = "success"
+    parsed["researcher_model"] = f"gemini:{GEMINI_MODEL}"
+    return parsed
+
+
+async def call_groq_researcher(topic: str, search_results: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Zadarmo alternatíva (Groq, OpenAI-kompatibilné API, open-source modely)."""
+    if not GROQ_API_KEY:
+        return {"status": "error", "human": "GROQ_API_KEY nie je nastavený."}
+    results_text = "\n\n".join(
+        f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  {r.get('link', '')}" for r in search_results
+    )
+    user_message = f"Téma: {topic}\n\nVýsledky vyhľadávania:\n\n{results_text}"
+    try:
+        resp = requests.post(
+            "https://api.groq.com/openai/v1/chat/completions",
+            headers={"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"},
+            json={
+                "model": GROQ_MODEL,
+                "messages": [
+                    {"role": "system", "content": BADATEL_SYSTEM_PROMPT},
+                    {"role": "user", "content": user_message},
+                ],
+                "response_format": {"type": "json_object"},
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "human": f"Groq API volanie zlyhalo: {exc}"}
+
+    try:
+        raw_text = data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError):
+        return {"status": "error", "human": "Groq vrátil neočakávanú odpoveď.", "raw": str(data)[:500]}
+
+    parsed = _parse_researcher_json(raw_text)
+    if parsed is None:
+        return {"status": "error", "human": "Bádateľ (Groq) vrátil odpoveď, ktorú sa nepodarilo spracovať.", "raw": raw_text}
+    parsed["status"] = "success"
+    parsed["researcher_model"] = f"groq:{GROQ_MODEL}"
+    return parsed
+
+
+def _parse_researcher_json(raw_text: str) -> Optional[Dict[str, Any]]:
     try:
         cleaned = raw_text.replace("```json", "").replace("```", "").strip()
-        parsed = json.loads(cleaned)
+        return json.loads(cleaned)
     except Exception:  # noqa: BLE001
-        return {"status": "error", "human": "Bádateľ vrátil odpoveď, ktorú sa nepodarilo spracovať.", "raw": raw_text}
+        return None
 
-    parsed["status"] = "success"
-    parsed["researcher_model"] = RESEARCHER_MODEL
-    return parsed
+
+async def call_researcher(topic: str, search_results: List[Dict[str, str]]) -> Dict[str, Any]:
+    """Smerovač: vyberie 'mozog' Bádateľa podľa RESEARCHER_PROVIDER (anthropic/gemini/groq)."""
+    if RESEARCHER_PROVIDER == "gemini":
+        return await call_gemini_researcher(topic, search_results)
+    if RESEARCHER_PROVIDER == "groq":
+        return await call_groq_researcher(topic, search_results)
+    return await call_anthropic_researcher(topic, search_results)
 
 
 def log_research_query(topic: str, provider: str, status: str) -> None:
@@ -734,7 +833,7 @@ async def research_topic(topic: str) -> Dict[str, Any]:
             "human": f"Vyhľadávanie zlyhalo na oboch poskytovateľoch: {search_result.get('message')}",
         }
 
-    verdict = await call_anthropic_researcher(topic, search_result.get("results", []))
+    verdict = await call_researcher(topic, search_result.get("results", []))
     log_research_query(topic, provider_used, "SUCCESS" if verdict.get("status") == "success" else "SYNTHESIS_FAILED")
 
     verdict["provider_used"] = provider_used
