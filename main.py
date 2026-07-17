@@ -31,7 +31,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.11.0-cap017-github-direct-write"
+VERSION = "v2.12.0-cap018-researcher-web-search"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -47,6 +47,17 @@ GITHUB_PAT = os.getenv("GITHUB_PAT", "").strip()
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "aiosarchitecture-max").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "ai-os-document-agent").strip()
 GITHUB_API_BASE = "https://api.github.com"
+
+# CAP-018 — Bádateľ (Researcher): dvojité vyhľadávanie webu s preventívnym prepínaním.
+SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
+SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
+YOUCOM_API_KEY = os.getenv("YOUCOM_API_KEY", "").strip()
+RESEARCHER_MODEL = os.getenv("RESEARCHER_MODEL", "claude-haiku-4-5-20251001").strip()
+
+# Jednoduchý počítadlo spotreby Serperu v pamäti servera (resetuje sa mesačne,
+# aj pri reštarte servera - to je v poriadku, je to len preventívna poistka,
+# nie presné účtovníctvo).
+_serper_usage = {"month": "", "count": 0}
 
 # CAP-015 — Reviewer Agent: nezávislé volanie Claude API (mimo Claude.ai konverzácie).
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "").strip()
@@ -111,10 +122,10 @@ app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
     "version": VERSION,
-    "stage": "CAP-017 GitHub Direct Write Bridge",
-    "last_stable_cap": "CAP-016",
-    "current_cap": "CAP-017",
-    "current_task": "Priamy zápis do GitHub repozitára cez vlastný PAT, nezávisle od cudzej OAuth appky.",
+    "stage": "CAP-018 Bádateľ (Researcher) - Web Search",
+    "last_stable_cap": "CAP-017",
+    "current_cap": "CAP-018",
+    "current_task": "Dvojité vyhľadávanie webu (Serper primárny, You.com záložný) s preventívnym prepínaním.",
     "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
     "apps_script_configured": bool(APPS_SCRIPT_WEBAPP_URL),
     "github_repo_url": GITHUB_REPO_URL,
@@ -211,6 +222,22 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
         "risk": "high",
         "requires_human_approval": True,
     },
+    {
+        "name": "aios_research",
+        "description": "CAP-018 Bádateľ — vyhľadá tému na webe (Serper + You.com záložný) a vráti zhustený súhrn. Iba čítanie webu, žiadny zápis do AI_OS.",
+        "method": "POST",
+        "path": "/research?token=API_TOKEN",
+        "risk": "low",
+        "requires_human_approval": False,
+    },
+    {
+        "name": "aios_research_log",
+        "description": "Prečíta AI_OS_RESEARCH_LOG (história vyhľadávaní Bádateľa).",
+        "method": "GET",
+        "path": "/research/log?token=API_TOKEN",
+        "risk": "low",
+        "requires_human_approval": False,
+    },
 ]
 
 def utc_now() -> str:
@@ -261,7 +288,7 @@ def post_to_apps_script(action: str, payload: Optional[Dict[str, Any]] = None) -
         return {"status": "error", "code": "APPS_SCRIPT_REQUEST_FAILED", "message": str(exc)}
 
 def normalize_message(message: str) -> str:
-    return re.sub(r"\\s+", " ", (message or "").strip())
+    return re.sub(r"\s+", " ", (message or "").strip())
 
 def command_to_action(message: str) -> Dict[str, Any]:
     m = normalize_message(message)
@@ -269,11 +296,11 @@ def command_to_action(message: str) -> Dict[str, Any]:
 
     # Systémové príkazy
     if low in {"ranný štart", "ranny start", "ranný start"}:
-        return {"intent": "MORNING_START", "human": "AI_OS – ranný štart\\nStav: pripravený.\\nĎalší krok: zadaj dnešnú prioritu."}
+        return {"intent": "MORNING_START", "human": "AI_OS – ranný štart\nStav: pripravený.\nĎalší krok: zadaj dnešnú prioritu."}
     if low in {"denné príkazy", "denne prikazy", "príkazy", "prikazy"}:
         return {"intent": "COMMANDS", "human": available_commands_text()}
     if "manažérsky prehľad" in low or "manazersky prehlad" in low:
-        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\\nStav: CAP-012.5 LLM Developer Bridge.\\nPriorita: bezpečne prepojiť AnythingLLM s AI_OS."}
+        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\nStav: CAP-012.5 LLM Developer Bridge.\nPriorita: bezpečne prepojiť AnythingLLM s AI_OS."}
 
     # Documentation Intelligence / Governance
     doc_commands = {
@@ -324,7 +351,7 @@ def command_to_action(message: str) -> Dict[str, Any]:
         event_type = "MANUAL_EVENT"
         detail = m
         payload = register_event(event_type, {"message": detail, "source": "assistant_text_command"})
-        return {"intent": "EVENT_TRIGGERED", "human": f"Udalosť bola zapísaná.\\nTyp: {event_type}\\nEvent ID: {payload['event_id']}", "data": payload}
+        return {"intent": "EVENT_TRIGGERED", "human": f"Udalosť bola zapísaná.\nTyp: {event_type}\nEvent ID: {payload['event_id']}", "data": payload}
 
     return {"intent": "DEFAULT", "human": "Požiadavka bola prijatá. Neviem ju ešte bezpečne vykonať ako štruktúrovaný príkaz. Použi: Denné príkazy."}
 
@@ -339,7 +366,7 @@ def call_script_intent(intent: str, message: str) -> Dict[str, Any]:
         if not human:
             human = text or f"{intent}: spracované."
         return {"intent": intent, "human": human, "apps_script": result}
-    return {"intent": intent, "human": f"Nepodarilo sa zavolať Apps Script.\\nChyba: {result.get('message') or result.get('code')}", "apps_script": result}
+    return {"intent": intent, "human": f"Nepodarilo sa zavolať Apps Script.\nChyba: {result.get('message') or result.get('code')}", "apps_script": result}
 
 def available_commands_text() -> str:
     return """AI_OS – dostupné príkazy
@@ -406,10 +433,10 @@ def boot_payload() -> Dict[str, Any]:
 def boot_text() -> str:
     p = boot_payload()
     return (
-        "AI_OS BOOT READY\\n"
-        f"Verzia: {p['version']}\\n"
-        f"Aktuálny CAP: {RUNTIME_STATE['current_cap']}\\n"
-        f"Úloha: {RUNTIME_STATE['current_task']}\\n"
+        "AI_OS BOOT READY\n"
+        f"Verzia: {p['version']}\n"
+        f"Aktuálny CAP: {RUNTIME_STATE['current_cap']}\n"
+        f"Úloha: {RUNTIME_STATE['current_task']}\n"
         "Pravidlo: externý LLM navrhuje, človek schvaľuje, GitHub/Render nasadzuje."
     )
 
@@ -417,7 +444,7 @@ def tools_text() -> str:
     lines = ["AI_OS MCP Tools – bezpečný zoznam nástrojov"]
     for tool in SAFE_TOOL_REGISTRY:
         lines.append(f"- {tool['name']}: {tool['description']} ({tool['method']} {tool['path']})")
-    return "\\n".join(lines)
+    return "\n".join(lines)
 
 def register_event(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     event = {
@@ -520,6 +547,199 @@ def github_write_file(path: str, content: str, commit_message: str) -> Dict[str,
         "commit_sha": commit_sha,
         "html_url": (data.get("content") or {}).get("html_url", ""),
     }
+
+
+# =====================================================================
+# CAP-018 — Bádateľ (Researcher)
+# Dvojité vyhľadávanie webu: Serper (primárny) → You.com (záložný),
+# s preventívnym prepnutím pred vyčerpaním limitu, nie iba reakciou na chybu.
+# =====================================================================
+def _current_month_key() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m")
+
+
+def _serper_usage_ratio() -> float:
+    month = _current_month_key()
+    if _serper_usage["month"] != month:
+        _serper_usage["month"] = month
+        _serper_usage["count"] = 0
+    if SERPER_MONTHLY_LIMIT <= 0:
+        return 1.0
+    return _serper_usage["count"] / SERPER_MONTHLY_LIMIT
+
+
+def _serper_increment() -> None:
+    month = _current_month_key()
+    if _serper_usage["month"] != month:
+        _serper_usage["month"] = month
+        _serper_usage["count"] = 0
+    _serper_usage["count"] += 1
+
+
+def search_serper(query: str) -> Dict[str, Any]:
+    if not SERPER_API_KEY:
+        return {"status": "error", "message": "SERPER_API_KEY nie je nastavený."}
+    try:
+        resp = requests.post(
+            "https://google.serper.dev/search",
+            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "num": 8},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"Serper zlyhal: {exc}"}
+    _serper_increment()
+    results = []
+    for item in data.get("organic", [])[:8]:
+        results.append(
+            {"title": item.get("title", ""), "snippet": item.get("snippet", ""), "link": item.get("link", "")}
+        )
+    return {"status": "success", "provider": "serper", "results": results}
+
+
+def search_youcom(query: str) -> Dict[str, Any]:
+    if not YOUCOM_API_KEY:
+        return {"status": "error", "message": "YOUCOM_API_KEY nie je nastavený."}
+    try:
+        resp = requests.get(
+            "https://api.you.com/v1/search",
+            headers={"X-API-Key": YOUCOM_API_KEY},
+            params={"q": query, "count": 8},
+            timeout=20.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "message": f"You.com zlyhal: {exc}"}
+    results = []
+    for item in (data.get("results") or data.get("hits") or [])[:8]:
+        results.append(
+            {
+                "title": item.get("title", ""),
+                "snippet": item.get("snippet", "") or item.get("description", ""),
+                "link": item.get("url", "") or item.get("link", ""),
+            }
+        )
+    return {"status": "success", "provider": "youcom", "results": results}
+
+
+def search_web(query: str) -> Dict[str, Any]:
+    """
+    Preventívne prepínanie: ak je Serper nad 90% mesačného limitu, rovno skús
+    You.com. Inak skús Serper prvý; ak zlyhá, prepni na You.com. Ak zlyhajú
+    obaja, vráti jasnú chybu (nikdy ticho prázdny výsledok).
+    """
+    provider_used = None
+    result: Dict[str, Any] = {}
+
+    if _serper_usage_ratio() < 0.9:
+        result = search_serper(query)
+        provider_used = "serper"
+
+    if not provider_used or result.get("status") != "success":
+        result = search_youcom(query)
+        provider_used = "youcom"
+
+    if result.get("status") != "success":
+        # Obaja zlyhali (alebo Serper preskočený kvôli limitu a You.com tiež zlyhal).
+        fallback = search_serper(query) if provider_used != "serper" else search_youcom(query)
+        if fallback.get("status") == "success":
+            result = fallback
+            provider_used = fallback.get("provider")
+
+    result["provider_used"] = provider_used
+    return result
+
+
+BADATEL_SYSTEM_PROMPT = """Si Bádateľ (Researcher) v systéme AI_OS. Dostaneš tému a surové výsledky
+webového vyhľadávania (názvy, úryvky, odkazy). Tvojou úlohou je vytvoriť ZHUSTENÝ, vysoko-hodnotný
+súhrn pre ďalšieho agenta v reťazci (Tvorcu alebo Zapisovateľa) — nie surový výpis všetkého, čo si našiel.
+
+Pravidlá:
+1. Maximálne 1500 slov. Cieľ je najmenší možný počet vysoko-hodnotných tokenov.
+2. Uveď iba fakty podložené výsledkami vyhľadávania — nič si nevymýšľaj.
+3. Na konci uveď zoznam zdrojov (odkazy), z ktorých si čerpal.
+4. Ak výsledky vyhľadávania téme nezodpovedajú alebo sú nedostatočné, jasne to napíš namiesto
+   toho, aby si si niečo domyslel.
+5. Štruktúruj odpoveď: krátke zhrnutie (2-3 vety) na začiatku, potom kľúčové zistenia, potom zdroje.
+
+Odpovedz vo formáte JSON:
+{
+  "summary": "krátke zhrnutie 2-3 vety",
+  "key_findings": ["zistenie 1", "zistenie 2", ...],
+  "sources": ["url1", "url2", ...],
+  "confidence": "HIGH|MEDIUM|LOW"
+}"""
+
+
+async def call_anthropic_researcher(topic: str, search_results: List[Dict[str, str]]) -> Dict[str, Any]:
+    if not ANTHROPIC_API_KEY:
+        return {"status": "error", "human": "ANTHROPIC_API_KEY nie je nastavený — Bádateľ nemôže bežať."}
+    results_text = "\n\n".join(
+        f"- {r.get('title', '')}\n  {r.get('snippet', '')}\n  {r.get('link', '')}" for r in search_results
+    )
+    user_message = f"Téma: {topic}\n\nVýsledky vyhľadávania:\n\n{results_text}"
+    try:
+        resp = requests.post(
+            ANTHROPIC_API_URL,
+            headers={
+                "x-api-key": ANTHROPIC_API_KEY,
+                "anthropic-version": "2023-06-01",
+                "content-type": "application/json",
+            },
+            json={
+                "model": RESEARCHER_MODEL,
+                "max_tokens": 2000,
+                "system": BADATEL_SYSTEM_PROMPT,
+                "messages": [{"role": "user", "content": user_message}],
+            },
+            timeout=60.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as exc:  # noqa: BLE001
+        return {"status": "error", "human": f"Bádateľ API volanie zlyhalo: {exc}"}
+
+    text_blocks = [b.get("text", "") for b in data.get("content", []) if b.get("type") == "text"]
+    raw_text = "\n".join(text_blocks).strip()
+    try:
+        cleaned = raw_text.replace("```json", "").replace("```", "").strip()
+        parsed = json.loads(cleaned)
+    except Exception:  # noqa: BLE001
+        return {"status": "error", "human": "Bádateľ vrátil odpoveď, ktorú sa nepodarilo spracovať.", "raw": raw_text}
+
+    parsed["status"] = "success"
+    parsed["researcher_model"] = RESEARCHER_MODEL
+    return parsed
+
+
+def log_research_query(topic: str, provider: str, status: str) -> None:
+    post_to_apps_script("LOG_RESEARCH_QUERY", {"topic": topic, "provider": provider or "none", "status": status})
+
+
+def read_research_log() -> Dict[str, Any]:
+    return post_to_apps_script("READ_RESEARCH_LOG", {})
+
+
+async def research_topic(topic: str) -> Dict[str, Any]:
+    search_result = search_web(topic)
+    provider_used = search_result.get("provider_used", "none")
+
+    if search_result.get("status") != "success":
+        log_research_query(topic, provider_used, "SEARCH_FAILED")
+        return {
+            "status": "error",
+            "human": f"Vyhľadávanie zlyhalo na oboch poskytovateľoch: {search_result.get('message')}",
+        }
+
+    verdict = await call_anthropic_researcher(topic, search_result.get("results", []))
+    log_research_query(topic, provider_used, "SUCCESS" if verdict.get("status") == "success" else "SYNTHESIS_FAILED")
+
+    verdict["provider_used"] = provider_used
+    verdict["topic"] = topic
+    return verdict
 
 
 def read_document_content(file_id: str) -> Dict[str, Any]:
@@ -817,6 +1037,31 @@ def documents_quality_log(request: Request, token: Optional[str] = None):
     return apps_script_result_to_response(result, debug)
 
 
+@app.post("/research")
+async def research_endpoint(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    topic = str(body.get("topic") or "").strip()
+    if not topic:
+        return plain_or_json({"status": "error", "human": "Chýba topic.", "version": VERSION}, debug)
+    result = await research_topic(topic)
+    return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
+
+
+@app.get("/research/log")
+def research_log_endpoint(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    result = read_research_log()
+    return apps_script_result_to_response(result, debug)
+
+
 @app.post("/github/write-file")
 async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -839,12 +1084,6 @@ async def github_write_file_endpoint(request: Request, token: Optional[str] = No
 # CAP-014 — MCP server (skutočné pripojenie pre Claude a iné MCP-kompatibilné
 # AI modely). Nástroje volajú presne tú istú logiku ako REST endpointy vyššie,
 # takže sa správanie nikde neduplikuje a nerozchádza.
-# =====================================================================
-# =====================================================================
-# CAP-014 — MCP nástroje (objekt "mcp" je už vytvorený na začiatku súboru,
-# spolu s prepojením na lifespan FastAPI aplikácie). Nástroje tu volajú
-# presne tú istú logiku ako REST endpointy vyššie, takže sa správanie
-# nikde neduplikuje a nerozchádza.
 # =====================================================================
 
 
@@ -920,6 +1159,26 @@ def aios_migration_log() -> dict:
 def aios_quality_log() -> dict:
     """Prečíta AI_OS_QUALITY_LOG — štruktúrovaný história všetkých Quality Workflow úloh (Task ID, stav, skóre, výhrady)."""
     return read_quality_log()
+
+
+@mcp.tool()
+async def aios_research(topic: str) -> dict:
+    """
+    Bádateľ Agent (CAP-018): vyhľadá tému na webe (Serper primárny, You.com záložný
+    s automatickým prepnutím) a vráti ZHUSTENÝ súhrn (max ~1500 slov) — nie surové
+    výsledky vyhľadávania. Vhodné ako prvý krok pred Tvorcom pri komplexnejších úlohách,
+    ktoré vyžadujú prieskum. Každé volanie sa zapíše do AI_OS_RESEARCH_LOG.
+
+    topic: téma/otázka na preskúmanie
+    Vráti: summary, key_findings, sources, confidence (HIGH/MEDIUM/LOW), provider_used.
+    """
+    return await research_topic(topic)
+
+
+@mcp.tool()
+def aios_research_log() -> dict:
+    """Prečíta AI_OS_RESEARCH_LOG — história vyhľadávaní Bádateľa (téma, poskytovateľ, stav)."""
+    return read_research_log()
 
 
 @mcp.tool()
@@ -1027,7 +1286,7 @@ async def events_trigger(request: Request, token: Optional[str] = None):
         "version": VERSION,
         "time_utc": utc_now(),
         "event": event,
-        "human": f"Udalosť bola prijatá.\\nTyp: {event_type}\\nEvent ID: {event['event_id']}",
+        "human": f"Udalosť bola prijatá.\nTyp: {event_type}\nEvent ID: {event['event_id']}",
     }
     return plain_or_json(response, debug)
 
@@ -1079,7 +1338,7 @@ def workspace(request: Request):
 ├── 30_CAPABILITIES
 ├── 90_ARCHIVE
 └── 99_SYSTEM_LOGS"""
-    payload = {"status": "success", "version": VERSION, "tree": tree, "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID), "human": "AI_OS – Project Workspace\\n" + tree}
+    payload = {"status": "success", "version": VERSION, "tree": tree, "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID), "human": "AI_OS – Project Workspace\n" + tree}
     return plain_or_json(payload, debug)
 
 @app.get("/documentation-audit")
