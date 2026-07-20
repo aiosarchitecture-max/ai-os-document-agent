@@ -2,23 +2,27 @@ import hashlib
 import hmac
 import json
 import secrets
+from typing import Annotated
 from datetime import datetime, timedelta, timezone
 
-from fastapi import Header, HTTPException, status
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .models import Approval
 
+bearer_scheme = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
 
-def require_api_token(authorization: str | None = Header(default=None)) -> None:
+
+def require_api_token(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(bearer_scheme)],
+) -> None:
     expected = get_settings().api_token
     if not expected:
         raise HTTPException(status_code=503, detail="API token is not configured")
-    supplied = ""
-    if authorization and authorization.lower().startswith("bearer "):
-        supplied = authorization[7:].strip()
+    supplied = credentials.credentials.strip() if credentials and credentials.scheme.lower() == "bearer" else ""
     if not supplied or not hmac.compare_digest(supplied, expected):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Unauthorized")
 

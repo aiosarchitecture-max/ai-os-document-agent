@@ -13,6 +13,19 @@ def test_health():
         assert response.json()["database"] == "ok"
 
 
+def test_secured_endpoint_requires_bearer_token():
+    with TestClient(app) as client:
+        assert client.get("/tasks").status_code == 401
+        assert client.get("/tasks", headers={"Authorization": "Bearer wrong-token"}).status_code == 401
+        assert client.get("/tasks", headers=HEADERS).status_code == 200
+
+
+def test_openapi_declares_bearer_security_scheme():
+    schema = app.openapi()
+    assert schema["components"]["securitySchemes"]["BearerAuth"]["scheme"] == "bearer"
+    assert schema["paths"]["/tasks"]["post"]["security"] == [{"BearerAuth": []}]
+
+
 def test_task_idempotency_and_transition():
     payload = {
         "title": "Implementovať pracovný kontext",
@@ -43,4 +56,3 @@ def test_approval_is_single_use():
         client.post("/drive/execute", json=operation, headers=HEADERS)
         repeated = client.post("/drive/execute", json=operation, headers=HEADERS)
         assert repeated.status_code == 403
-
