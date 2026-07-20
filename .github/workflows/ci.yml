@@ -14,5 +14,5 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements.txt
       - run: python -m compileall app tests migrations
-      - run: pytest -q
+      - run: python -m pytest -q
 
