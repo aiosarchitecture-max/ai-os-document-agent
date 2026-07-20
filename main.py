@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.13.0-cap019-cron-worker"
+VERSION = "v2.14.0-cap020-task-form"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -85,10 +85,10 @@ app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
     "version": VERSION,
-    "stage": "CAP-019 24/7 Cron Worker",
-    "last_stable_cap": "CAP-018",
-    "current_cap": "CAP-019",
-    "current_task": "Spracovanie fronty úloh z AI_OS_TASKS bez potreby otvorenej chat konverzácie.",
+    "stage": "CAP-020 Task Creation Form",
+    "last_stable_cap": "CAP-019",
+    "current_cap": "CAP-020",
+    "current_task": "Mobilny formular a API endpoint na jednoduche vytvorenie ulohy.",
     "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
     "apps_script_configured": bool(APPS_SCRIPT_WEBAPP_URL),
     "github_repo_url": GITHUB_REPO_URL,
@@ -111,6 +111,7 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
     {"name": "aios_research", "description": "CAP-018 Bádateľ — vyhľadá tému na webe a vráti zhustený súhrn.", "method": "POST", "path": "/research?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_research_log", "description": "Prečíta AI_OS_RESEARCH_LOG.", "method": "GET", "path": "/research/log?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_process_pending_tasks", "description": "CAP-019 — Spracuje čakajúce úlohy z AI_OS_TASKS.", "method": "GET", "path": "/tasks/process-pending?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
+    {"name": "aios_create_task", "description": "CAP-020 — Vytvorí novú úlohu v AI_OS_TASKS (spracuje ju Cron Worker do ~10 min). Aj mobilný formulár na /tasks/new.", "method": "POST", "path": "/tasks/create?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
 ]
 
 def utc_now() -> str:
@@ -161,7 +162,7 @@ def command_to_action(message: str) -> Dict[str, Any]:
     if low in {"denné príkazy", "denne prikazy", "príkazy", "prikazy"}:
         return {"intent": "COMMANDS", "human": available_commands_text()}
     if "manažérsky prehľad" in low or "manazersky prehlad" in low:
-        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\nStav: CAP-019.\nPriorita: 24/7 spracovanie úloh."}
+        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\nStav: CAP-020.\nPriorita: jednoduchšie zadávanie úloh."}
     doc_commands = {
         "audit dokumentácie": "DOC_AUDIT", "audit dokumentacie": "DOC_AUDIT",
         "inventúra dokumentov": "DOC_INVENTORY", "inventura dokumentov": "DOC_INVENTORY",
@@ -489,6 +490,10 @@ def get_pending_tasks() -> Dict[str, Any]:
 def update_task_status(task_id: str, new_status: str, note: str = "") -> Dict[str, Any]:
     return post_to_apps_script("UPDATE_TASK_STATUS", {"taskId": task_id, "newStatus": new_status, "note": note})
 
+def create_task(title: str, content: str = "", priority: str = "MEDIUM") -> Dict[str, Any]:
+    task_id = f"TASK-{datetime.now(timezone.utc).strftime('%Y%m%d-%H%M%S')}"
+    return post_to_apps_script("CREATE_TASK", {"taskId": task_id, "title": title, "content": content or title, "priority": priority})
+
 async def process_pending_tasks() -> Dict[str, Any]:
     result = get_pending_tasks()
     data = result.get("data") if isinstance(result.get("data"), dict) else {}
@@ -713,6 +718,108 @@ async def tasks_process_pending_endpoint(request: Request, token: Optional[str] 
     result = await process_pending_tasks()
     return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
 
+@app.post("/tasks/create")
+async def tasks_create_endpoint(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    title = str(body.get("title") or "").strip()
+    content = str(body.get("content") or "").strip()
+    priority = str(body.get("priority") or "MEDIUM").strip().upper()
+    if not title:
+        return plain_or_json({"status": "error", "human": "Chýba title.", "version": VERSION}, debug)
+    result = create_task(title, content, priority)
+    return apps_script_result_to_response(result, debug)
+
+@app.get("/tasks/new")
+def tasks_new_form(token: Optional[str] = None):
+    token_value = token or ""
+    html = f"""<!doctype html><html lang="sk"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AI_OS — Nová úloha</title>
+<style>
+body{{margin:0;background:#f3f4f6;font-family:-apple-system,Arial,sans-serif;color:#111827;padding:20px}}
+.wrap{{max-width:520px;margin:0 auto;background:white;border-radius:14px;padding:22px;box-shadow:0 4px 16px rgba(0,0,0,.08)}}
+h1{{font-size:20px;margin:0 0 6px}}
+.sub{{color:#6b7280;font-size:13px;margin-bottom:18px}}
+label{{display:block;font-size:13px;font-weight:600;margin:14px 0 6px}}
+textarea{{width:100%;min-height:110px;box-sizing:border-box;border:1.5px solid #d1d5db;border-radius:10px;padding:12px;font-size:16px;font-family:inherit;resize:vertical}}
+select{{width:100%;box-sizing:border-box;border:1.5px solid #d1d5db;border-radius:10px;padding:10px;font-size:16px}}
+button{{width:100%;margin-top:20px;background:#111827;color:white;border:0;border-radius:10px;padding:14px;font-size:16px;font-weight:700;cursor:pointer}}
+button:disabled{{opacity:.5}}
+.hint{{font-size:12px;color:#9ca3af;margin-top:6px}}
+.status{{margin-top:16px;padding:12px;border-radius:10px;font-size:14px;white-space:pre-wrap;display:none}}
+.status.ok{{background:#ecfdf5;color:#065f46;display:block}}
+.status.err{{background:#fef2f2;color:#991b1b;display:block}}
+.mic-hint{{display:flex;align-items:center;gap:6px;font-size:12px;color:#6b7280;margin-top:4px}}
+</style></head>
+<body>
+<div class="wrap">
+  <h1>🎯 Nová úloha pre AI_OS</h1>
+  <div class="sub">Sprostredkovateľ ju spracuje automaticky do ~10 minút — nemusíš byť v chate.</div>
+
+  <label for="title">Čo potrebuješ preskúmať/zistiť?</label>
+  <textarea id="title" placeholder="Napíš, alebo klikni na mikrofón na klávesnici telefónu a nadiktuj..."></textarea>
+  <div class="mic-hint">💡 Na telefóne: klikni na ikonku mikrofónu priamo na klávesnici a diktuj</div>
+
+  <label for="priority">Priorita</label>
+  <select id="priority">
+    <option value="LOW">Nízka</option>
+    <option value="MEDIUM" selected>Stredná</option>
+    <option value="HIGH">Vysoká</option>
+  </select>
+
+  <button id="submitBtn" onclick="submitTask()">Odoslať úlohu</button>
+  <div id="status" class="status"></div>
+</div>
+<script>
+const tokenFromServer = {json.dumps(token_value)};
+function getToken() {{
+  const params = new URLSearchParams(window.location.search);
+  return params.get('token') || tokenFromServer || '';
+}}
+async function submitTask() {{
+  const title = document.getElementById('title').value.trim();
+  const priority = document.getElementById('priority').value;
+  const statusEl = document.getElementById('status');
+  const btn = document.getElementById('submitBtn');
+  if (!title) {{
+    statusEl.className = 'status err';
+    statusEl.textContent = 'Napíš prosím, čo potrebuješ.';
+    return;
+  }}
+  btn.disabled = true;
+  btn.textContent = 'Odosielam...';
+  try {{
+    const r = await fetch('/tasks/create?token=' + encodeURIComponent(getToken()) + '&debug=true', {{
+      method: 'POST',
+      headers: {{'Content-Type': 'application/json'}},
+      body: JSON.stringify({{title: title, priority: priority}})
+    }});
+    const data = await r.json();
+    if (data.status === 'success') {{
+      statusEl.className = 'status ok';
+      statusEl.textContent = '✅ ' + (data.human || 'Úloha pridaná.');
+      document.getElementById('title').value = '';
+    }} else {{
+      statusEl.className = 'status err';
+      statusEl.textContent = '❌ ' + (data.human || 'Nepodarilo sa pridať úlohu.');
+    }}
+  }} catch(e) {{
+    statusEl.className = 'status err';
+    statusEl.textContent = '❌ Chyba: ' + e;
+  }}
+  btn.disabled = false;
+  btn.textContent = 'Odoslať úlohu';
+}}
+</script>
+</body></html>"""
+    return HTMLResponse(html)
+
 @app.post("/github/write-file")
 async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -797,6 +904,11 @@ def aios_research_log() -> dict:
 async def aios_process_pending_tasks() -> dict:
     """CAP-019 — Manuálne spustenie spracovania čakajúcich úloh z AI_OS_TASKS."""
     return await process_pending_tasks()
+
+@mcp.tool()
+def aios_create_task(title: str, content: str = "", priority: str = "MEDIUM") -> dict:
+    """CAP-020 — Vytvorí novú úlohu v AI_OS_TASKS (status NEW), spracuje ju Cron Worker do ~10 min."""
+    return create_task(title, content, priority)
 
 @mcp.tool()
 def aios_github_write_file(path: str, content: str, commit_message: str = "") -> dict:
