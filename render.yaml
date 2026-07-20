@@ -1,46 +1,30 @@
 databases:
-  - name: ai-os-core-db
-    plan: basic-256mb
-    databaseName: aios
-    user: aios
+  - name: ai-os-core-staging-db
+    plan: free
+    databaseName: aios_staging
+    user: aios_staging
     region: frankfurt
     ipAllowList: []
 
 services:
   - type: web
-    name: ai-os-document-agent
+    name: ai-os-core-staging
     env: python
     plan: free
     region: frankfurt
     buildCommand: pip install -r requirements.txt
-    preDeployCommand: alembic upgrade head
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
     envVars:
       - key: DATABASE_URL
         fromDatabase:
-          name: ai-os-core-db
+          name: ai-os-core-staging-db
           property: connectionString
       - key: ENVIRONMENT
-        value: production
+        value: staging
       - key: WEB_CONCURRENCY
         value: 1
       - key: REQUEST_TIMEOUT_SECONDS
         value: 60
-
-  - type: cron
-    name: ai-os-cron-worker
-    env: python
-    region: frankfurt
-    plan: starter
-    schedule: "*/10 * * * *"
-    buildCommand: pip install -r requirements.txt
-    startCommand: python -m app.worker
-    envVars:
-      - key: DATABASE_URL
-        fromDatabase:
-          name: ai-os-core-db
-          property: connectionString
-      - key: ENVIRONMENT
-        value: production
-
+      - key: API_TOKEN
+        sync: false
