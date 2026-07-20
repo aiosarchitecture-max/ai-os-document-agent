@@ -65,9 +65,16 @@ async def drive_execute(data: DangerousOperation, db: Session = Depends(get_db))
     allowed = {"MOVE_FILE", "TRASH_FILE", "RENAME_FILE"}
     if data.operation not in allowed:
         raise HTTPException(status_code=400, detail="Unsupported operation")
+    if data.payload.get("fileId") != data.target:
+        raise HTTPException(status_code=400, detail="Operation target must match payload fileId")
     consume_approval(db, data.operation, data.target, data.payload, data.approval_token)
     payload = {**data.payload, "target": data.target}
     return await call_apps_script(data.operation, payload)
+
+
+@app.get("/integrations/apps-script/health", dependencies=[Depends(require_api_token)])
+async def apps_script_health() -> dict:
+    return await call_apps_script("PING", {})
 
 
 @app.get("/boot", dependencies=[Depends(require_api_token)])
@@ -79,4 +86,3 @@ def boot() -> dict:
         "workflow": ["NEW", "RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"],
         "compatibility": "Legacy bridge remains available during migration",
     }
-

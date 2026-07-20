@@ -30,3 +30,9 @@ services:
         value: 60
       - key: API_TOKEN
         sync: false
+      - key: APPS_SCRIPT_WEBAPP_URL
+        sync: false
+      - key: APPS_SCRIPT_SECRET
+        sync: false
+      - key: AI_OS_ROOT_FOLDER_ID
+        sync: false

@@ -1,4 +1,5 @@
 from datetime import datetime, timezone
+from uuid import uuid4
 
 import httpx
 from fastapi import HTTPException
@@ -68,7 +69,13 @@ async def call_apps_script(action: str, payload: dict) -> dict:
     settings = get_settings()
     if not settings.apps_script_webapp_url or not settings.apps_script_secret:
         raise HTTPException(status_code=503, detail="Apps Script bridge is not configured")
-    body = {"secret": settings.apps_script_secret, "action": action, "payload": payload, "version": settings.version}
+    body = {
+        "secret": settings.apps_script_secret,
+        "action": action,
+        "payload": payload,
+        "version": settings.version,
+        "requestId": str(uuid4()),
+    }
     try:
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.post(settings.apps_script_webapp_url, json=body)

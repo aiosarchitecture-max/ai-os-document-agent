@@ -15,4 +15,4 @@ jobs:
       - run: pip install -r requirements.txt
       - run: python -m compileall app tests migrations
       - run: python -m pytest -q
-
+      - run: node apps-script/test/bridge.test.js

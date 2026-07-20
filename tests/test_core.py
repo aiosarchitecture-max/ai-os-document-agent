@@ -1,6 +1,9 @@
+import asyncio
+
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app import services
 
 
 HEADERS = {"Authorization": "Bearer test-token"}
@@ -56,3 +59,54 @@ def test_approval_is_single_use():
         client.post("/drive/execute", json=operation, headers=HEADERS)
         repeated = client.post("/drive/execute", json=operation, headers=HEADERS)
         assert repeated.status_code == 403
+
+
+def test_dangerous_operation_target_must_match_payload():
+    request = {"operation": "TRASH_FILE", "target": "file-1", "payload": {"fileId": "file-2"}}
+    with TestClient(app) as client:
+        issued = client.post("/approvals", json=request, headers=HEADERS)
+        operation = {**request, "approval_token": issued.json()["approval_token"]}
+        response = client.post("/drive/execute", json=operation, headers=HEADERS)
+        assert response.status_code == 400
+
+
+def test_apps_script_call_uses_post_secret_and_unique_request_id(monkeypatch):
+    captured = {}
+
+    class Settings:
+        apps_script_webapp_url = "https://script.google.test/exec"
+        apps_script_secret = "private-test-secret"
+        request_timeout_seconds = 10
+        version = "test-version"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"status": "success", "data": {"pong": True}}
+
+    class Client:
+        def __init__(self, timeout):
+            captured["timeout"] = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_):
+            return None
+
+        async def post(self, url, json):
+            captured["url"] = url
+            captured["body"] = json
+            return Response()
+
+    monkeypatch.setattr(services, "get_settings", lambda: Settings())
+    monkeypatch.setattr(services.httpx, "AsyncClient", Client)
+    result = asyncio.run(services.call_apps_script("PING", {}))
+
+    assert result["status"] == "success"
+    assert captured["url"] == Settings.apps_script_webapp_url
+    assert captured["body"]["secret"] == Settings.apps_script_secret
+    assert captured["body"]["requestId"]
+    assert "secret" not in captured["url"]
