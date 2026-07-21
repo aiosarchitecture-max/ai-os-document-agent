@@ -7,8 +7,9 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import SessionLocal, create_schema, get_db
 from .legacy_migration import run_legacy_task_migration
-from .models import Task, TaskStatus
+from .models import AuditEvent, Task, TaskStatus
 from .schemas import (
+    AuditEventRead,
     ApprovalRequest,
     CreateDocumentRequest,
     DangerousOperation,
@@ -107,6 +108,22 @@ def task_transition(task_id: str, new_status: TaskStatus, db: Session = Depends(
     if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return transition_task(db, task, new_status)
+
+
+@app.get(
+    "/tasks/{task_id}/audit",
+    response_model=list[AuditEventRead],
+    dependencies=[Depends(require_api_token)],
+)
+def task_audit(task_id: str, db: Session = Depends(get_db)):
+    if not db.get(Task, task_id):
+        raise HTTPException(status_code=404, detail="Task not found")
+    query = (
+        select(AuditEvent)
+        .where(AuditEvent.entity_type == "task", AuditEvent.entity_id == task_id)
+        .order_by(AuditEvent.created_at.asc(), AuditEvent.id.asc())
+    )
+    return list(db.scalars(query))
 
 
 @app.post("/approvals", dependencies=[Depends(require_api_token)])
