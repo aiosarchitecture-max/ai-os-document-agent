@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 
 from .config import get_settings
 from .models import AuditEvent, Task, TaskStatus, WorkOrder
-from .schemas import TaskCreate
+from .schemas import LegacyTaskImportRequest, LegacyTaskImportResult, TaskCreate
 
 
 def create_task(db: Session, data: TaskCreate) -> Task:
@@ -42,6 +42,84 @@ def create_task(db: Session, data: TaskCreate) -> Task:
         raise
     db.refresh(task)
     return task
+
+
+def _legacy_priority(value: str | int) -> int:
+    if isinstance(value, int):
+        return min(max(value, 0), 100)
+    normalized = value.strip().upper()
+    return {
+        "LOW": 25,
+        "NÍZKA": 25,
+        "NIZKA": 25,
+        "MEDIUM": 50,
+        "STREDNÁ": 50,
+        "STREDNA": 50,
+        "HIGH": 80,
+        "VYSOKÁ": 80,
+        "VYSOKA": 80,
+        "CRITICAL": 100,
+        "KRITICKÁ": 100,
+        "KRITICKA": 100,
+    }.get(normalized, 50)
+
+
+def _legacy_status(value: str) -> TaskStatus:
+    normalized = value.strip().upper()
+    aliases = {"PENDING": TaskStatus.NEW, "STAV": TaskStatus.NEW}
+    if normalized in aliases:
+        return aliases[normalized]
+    try:
+        return TaskStatus(normalized)
+    except ValueError:
+        return TaskStatus.NEW
+
+
+def import_legacy_tasks(db: Session, data: LegacyTaskImportRequest) -> LegacyTaskImportResult:
+    external_ids = [item.external_id.strip() for item in data.tasks]
+    if len(set(external_ids)) != len(external_ids):
+        raise HTTPException(status_code=422, detail="Duplicate external_id in import payload")
+    existing = set(
+        db.scalars(select(Task.external_id).where(Task.external_id.in_(external_ids)))
+    )
+    pending = [
+        (item, external_id)
+        for item, external_id in zip(data.tasks, external_ids)
+        if external_id not in existing
+    ]
+    if not data.dry_run:
+        for item, external_id in pending:
+            db.add(
+                Task(
+                    external_id=external_id,
+                    title=item.title,
+                    description=item.description,
+                    status=_legacy_status(item.status),
+                    priority=_legacy_priority(item.priority),
+                    project_key=item.project_key,
+                    owner=item.owner,
+                    idempotency_key=f"legacy:{data.source_document_id}:{external_id}",
+                    source_document_id=data.source_document_id,
+                )
+            )
+        db.add(
+            AuditEvent(
+                event_type="LEGACY_TASKS_IMPORTED",
+                actor="system",
+                entity_type="document",
+                entity_id=data.source_document_id,
+                payload={"received": len(data.tasks), "imported": len(pending), "skipped": len(existing)},
+            )
+        )
+        db.commit()
+    return LegacyTaskImportResult(
+        dry_run=data.dry_run,
+        source_document_id=data.source_document_id,
+        received=len(data.tasks),
+        imported=len(pending),
+        skipped_existing=len(existing),
+        external_ids=[external_id for _, external_id in pending],
+    )
 
 
 def transition_task(db: Session, task: Task, new_status: TaskStatus, actor: str = "system") -> Task:
@@ -102,3 +180,4 @@ async def call_apps_script(action: str, payload: dict, request_id: str | None = 
     if result.get("status") != "success":
         raise HTTPException(status_code=502, detail=result)
     return result
+

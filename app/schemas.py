@@ -57,3 +57,29 @@ class CreateDocumentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     content: str = Field(default="", max_length=100000)
 
+
+class LegacyTaskInput(BaseModel):
+    external_id: str = Field(min_length=1, max_length=120)
+    status: str = Field(default="NEW", max_length=40)
+    priority: str | int = "MEDIUM"
+    project_key: str = Field(default="AI_OS", max_length=120)
+    owner: str = Field(default="Daniel", max_length=200)
+    title: str = Field(min_length=1, max_length=500)
+    description: str = ""
+
+
+class LegacyTaskImportRequest(BaseModel):
+    source_document_id: str = Field(min_length=1, max_length=200)
+    dry_run: bool = True
+    tasks: list[LegacyTaskInput] = Field(min_length=1, max_length=500)
+
+
+class LegacyTaskImportResult(BaseModel):
+    dry_run: bool
+    source_document_id: str
+    received: int
+    imported: int
+    skipped_existing: int
+    external_ids: list[str]
+
+

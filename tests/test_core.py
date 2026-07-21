@@ -93,6 +93,81 @@ def test_task_idempotency_and_transition():
         assert moved.json()["status"] == "RESEARCH"
 
 
+def test_legacy_task_import_dry_run_then_apply_is_idempotent():
+    payload = {
+        "source_document_id": "legacy-doc-1",
+        "tasks": [
+            {
+                "external_id": "LEGACY-001",
+                "status": "DONE",
+                "priority": "HIGH",
+                "project_key": "AI_OS",
+                "owner": "Daniel",
+                "title": "Legacy done task",
+                "description": "Imported description",
+            },
+            {
+                "external_id": "LEGACY-002",
+                "status": "STAV",
+                "priority": "NÍZKA",
+                "project_key": "AI_OS",
+                "owner": "Daniel",
+                "title": "Legacy pending task",
+            },
+        ],
+    }
+    with TestClient(app) as client:
+        dry_run = client.post(
+            "/migration/legacy-tasks",
+            json={**payload, "dry_run": True},
+            headers=HEADERS,
+        )
+        assert dry_run.status_code == 200
+        assert dry_run.json()["imported"] == 2
+        assert not any(
+            task["external_id"] in {"LEGACY-001", "LEGACY-002"}
+            for task in client.get("/tasks", headers=HEADERS).json()
+        )
+
+        applied = client.post(
+            "/migration/legacy-tasks",
+            json={**payload, "dry_run": False},
+            headers=HEADERS,
+        )
+        repeated = client.post(
+            "/migration/legacy-tasks",
+            json={**payload, "dry_run": False},
+            headers=HEADERS,
+        )
+        tasks = client.get("/tasks", headers=HEADERS).json()
+
+    assert applied.json()["imported"] == 2
+    assert repeated.json()["imported"] == 0
+    assert repeated.json()["skipped_existing"] == 2
+    assert {
+        task["external_id"]: task["status"]
+        for task in tasks
+        if task["external_id"] in {"LEGACY-001", "LEGACY-002"}
+    } == {
+        "LEGACY-001": "DONE",
+        "LEGACY-002": "NEW",
+    }
+
+
+def test_legacy_task_import_rejects_duplicate_external_ids():
+    item = {
+        "external_id": "DUP-001",
+        "title": "Duplicate",
+    }
+    with TestClient(app) as client:
+        response = client.post(
+            "/migration/legacy-tasks",
+            json={"source_document_id": "legacy-doc-2", "tasks": [item, item]},
+            headers=HEADERS,
+        )
+    assert response.status_code == 422
+
+
 def test_approval_is_single_use():
     request = {"operation": "TRASH_FILE", "target": "file-1", "payload": {"fileId": "file-1"}}
     with TestClient(app) as client:
@@ -210,3 +285,4 @@ def test_apps_script_failures_are_closed_and_mapped_to_502(monkeypatch, response
         asyncio.run(services.call_apps_script("PING", {}))
     assert raised.value.status_code == 502
     assert expected in str(raised.value.detail)
+
