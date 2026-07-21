@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # The legacy snapshot preview is read-only and safe to run when Render has
     # not synchronized a newly added render.yaml environment variable yet.
     legacy_tasks_preview_on_startup: bool = True
+    # One-time migration switch approved on 2026-07-21. The migration is
+    # idempotent: only external IDs absent from PostgreSQL are inserted.
+    legacy_tasks_apply_on_startup: bool = True
     request_timeout_seconds: float = Field(default=60.0, ge=1, le=300)
 
 
