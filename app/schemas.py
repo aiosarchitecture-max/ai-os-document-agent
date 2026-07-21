@@ -51,3 +51,9 @@ class DangerousOperation(BaseModel):
     payload: dict[str, Any] = Field(default_factory=dict)
     approval_token: str
 
+
+class CreateDocumentRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+    title: str = Field(min_length=1, max_length=500)
+    content: str = Field(default="", max_length=100000)
+

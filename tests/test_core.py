@@ -36,6 +36,41 @@ def test_openapi_declares_bearer_security_scheme():
     schema = app.openapi()
     assert schema["components"]["securitySchemes"]["BearerAuth"]["scheme"] == "bearer"
     assert schema["paths"]["/tasks"]["post"]["security"] == [{"BearerAuth": []}]
+    assert schema["paths"]["/integrations/apps-script/documents"]["post"]["security"] == [{"BearerAuth": []}]
+
+
+def test_create_document_is_root_scoped_and_idempotent(monkeypatch):
+    captured = []
+    monkeypatch.setattr("app.main.settings.ai_os_root_folder_id", "root-folder")
+
+    async def fake_call(action, payload, request_id=None):
+        captured.append((action, payload, request_id))
+        return {"status": "success", "requestId": request_id, "duplicate": len(captured) > 1}
+
+    monkeypatch.setattr("app.main.call_apps_script", fake_call)
+    payload = {"request_id": "staging-doc-001", "title": "AI_OS staging test", "content": "ok"}
+    with TestClient(app) as client:
+        first = client.post("/integrations/apps-script/documents", json=payload, headers=HEADERS)
+        second = client.post("/integrations/apps-script/documents", json=payload, headers=HEADERS)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert first.json()["duplicate"] is False
+    assert second.json()["duplicate"] is True
+    assert captured == [
+        ("CREATE_DOC", {"title": "AI_OS staging test", "content": "ok", "folderId": "root-folder"}, "staging-doc-001"),
+        ("CREATE_DOC", {"title": "AI_OS staging test", "content": "ok", "folderId": "root-folder"}, "staging-doc-001"),
+    ]
+
+
+def test_create_document_rejects_invalid_request_id():
+    with TestClient(app) as client:
+        response = client.post(
+            "/integrations/apps-script/documents",
+            json={"request_id": "bad id", "title": "AI_OS staging test"},
+            headers=HEADERS,
+        )
+    assert response.status_code == 422
 
 
 def test_task_idempotency_and_transition():

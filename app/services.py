@@ -66,7 +66,7 @@ def transition_task(db: Session, task: Task, new_status: TaskStatus, actor: str 
     return task
 
 
-async def call_apps_script(action: str, payload: dict) -> dict:
+async def call_apps_script(action: str, payload: dict, request_id: str | None = None) -> dict:
     settings = get_settings()
     if not settings.apps_script_webapp_url or not settings.apps_script_secret:
         raise HTTPException(status_code=503, detail="Apps Script bridge is not configured")
@@ -75,7 +75,7 @@ async def call_apps_script(action: str, payload: dict) -> dict:
         "action": action,
         "payload": payload,
         "version": settings.version,
-        "requestId": str(uuid4()),
+        "requestId": request_id or str(uuid4()),
     }
     try:
         # Follow exactly the redirect protocol used by Apps Script. Automatic

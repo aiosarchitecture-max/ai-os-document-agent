@@ -7,7 +7,7 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import create_schema, get_db
 from .models import Task, TaskStatus
-from .schemas import ApprovalRequest, DangerousOperation, TaskCreate, TaskRead
+from .schemas import ApprovalRequest, CreateDocumentRequest, DangerousOperation, TaskCreate, TaskRead
 from .security import consume_approval, issue_approval, require_api_token
 from .services import call_apps_script, create_task, transition_task
 
@@ -75,6 +75,17 @@ async def drive_execute(data: DangerousOperation, db: Session = Depends(get_db))
 @app.get("/integrations/apps-script/health", dependencies=[Depends(require_api_token)])
 async def apps_script_health() -> dict:
     return await call_apps_script("PING", {})
+
+
+@app.post("/integrations/apps-script/documents", dependencies=[Depends(require_api_token)])
+async def apps_script_create_document(data: CreateDocumentRequest) -> dict:
+    if not settings.ai_os_root_folder_id:
+        raise HTTPException(status_code=503, detail="AI_OS root folder is not configured")
+    return await call_apps_script(
+        "CREATE_DOC",
+        {"title": data.title, "content": data.content, "folderId": settings.ai_os_root_folder_id},
+        request_id=data.request_id,
+    )
 
 
 @app.get("/boot", dependencies=[Depends(require_api_token)])
