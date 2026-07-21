@@ -7,9 +7,17 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import create_schema, get_db
 from .models import Task, TaskStatus
-from .schemas import ApprovalRequest, CreateDocumentRequest, DangerousOperation, TaskCreate, TaskRead
+from .schemas import (
+    ApprovalRequest,
+    CreateDocumentRequest,
+    DangerousOperation,
+    LegacyTaskImportRequest,
+    LegacyTaskImportResult,
+    TaskCreate,
+    TaskRead,
+)
 from .security import consume_approval, issue_approval, require_api_token
-from .services import call_apps_script, create_task, transition_task
+from .services import call_apps_script, create_task, import_legacy_tasks, transition_task
 
 
 @asynccontextmanager
@@ -44,6 +52,15 @@ def list_tasks(status: TaskStatus | None = None, limit: int = 100, db: Session =
 @app.post("/tasks", response_model=TaskRead, dependencies=[Depends(require_api_token)])
 def task_create(data: TaskCreate, db: Session = Depends(get_db)):
     return create_task(db, data)
+
+
+@app.post(
+    "/migration/legacy-tasks",
+    response_model=LegacyTaskImportResult,
+    dependencies=[Depends(require_api_token)],
+)
+def legacy_tasks_import(data: LegacyTaskImportRequest, db: Session = Depends(get_db)):
+    return import_legacy_tasks(db, data)
 
 
 @app.post("/tasks/{task_id}/transition", response_model=TaskRead, dependencies=[Depends(require_api_token)])
@@ -97,3 +114,4 @@ def boot() -> dict:
         "workflow": ["NEW", "RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"],
         "compatibility": "Legacy bridge remains available during migration",
     }
+
