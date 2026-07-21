@@ -34,13 +34,15 @@ uvicorn app.main:app --reload
 - `APPS_SCRIPT_WEBAPP_URL`
 - `APPS_SCRIPT_SECRET`
 - `AI_OS_ROOT_FOLDER_ID`
+- `TASK_REGISTER_SPREADSHEET_ID` (optional; enables task dual-write)
+- `TASK_REGISTER_SHEET_NAME` (defaults to `AI_OS_TASKS`)
 - provider API keys required by individual agents
 
 ## Migration sequence
 
 1. Deploy PostgreSQL and run schema migration.
 2. Import current `AI_OS_TASKS` records with stable external IDs.
-3. Enable dual-write to PostgreSQL and the human-readable Drive register.
+3. Enable dual-write to PostgreSQL and the human-readable Drive register. The implementation is available and remains disabled until `TASK_REGISTER_SPREADSHEET_ID` is configured.
 4. Compare both stores and resolve discrepancies.
 5. Switch reads to PostgreSQL.
 6. Keep Drive as a synchronized operational view and knowledge store.
