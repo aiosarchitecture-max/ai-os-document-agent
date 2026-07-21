@@ -130,7 +130,32 @@ async def drive_execute(data: DangerousOperation, db: Session = Depends(get_db))
 @app.get("/integrations/task-register/status")
 async def task_register_status(db: Session = Depends(get_db)) -> dict:
     """Return only aggregate, non-sensitive register diagnostics for deployment checks."""
-    readiness = await inspect_task_register()
+    try:
+        readiness = await inspect_task_register()
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        error = str(detail.get("error", ""))
+        error_code = "bridge_error"
+        for needle, code in (
+            ("Unsupported action", "bridge_version_outdated"),
+            ("outside AI_OS root", "register_outside_root"),
+            ("Sheet not found", "sheet_not_found"),
+            ("Unauthorized", "bridge_auth_failed"),
+        ):
+            if needle in error:
+                error_code = code
+                break
+        return {
+            "status": "error",
+            "ready": False,
+            "dual_write_enabled": bool(settings.task_register_dual_write_enabled),
+            "checks": {"configured": True, "readable": False, "header_valid": False},
+            "postgres_tasks": 0,
+            "register_tasks": 0,
+            "missing": 0,
+            "stale": 0,
+            "error_code": error_code,
+        }
     response = {
         "status": readiness.get("status"),
         "ready": bool(readiness.get("ready")),
