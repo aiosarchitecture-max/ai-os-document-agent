@@ -1,4 +1,5 @@
 name: CI
+# Read-only verification run after the approved five-task migration.
 on:
   pull_request:
   push:
