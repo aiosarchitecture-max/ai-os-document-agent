@@ -286,3 +286,19 @@ def test_apps_script_failures_are_closed_and_mapped_to_502(monkeypatch, response
     assert raised.value.status_code == 502
     assert expected in str(raised.value.detail)
 
+
+
+def test_deterministic_legacy_snapshot_preview_is_read_only():
+    from app.db import SessionLocal
+    from app.legacy_migration import LEGACY_TASK_SNAPSHOT, run_legacy_task_migration
+
+    with SessionLocal() as db:
+        before = db.query(services.Task).count()
+        result = run_legacy_task_migration(db, apply=False)
+        after = db.query(services.Task).count()
+
+    assert len(LEGACY_TASK_SNAPSHOT) == 5
+    assert result["received"] == 5
+    assert result["applied"] == 0
+    assert after == before
+    assert result["importable"] + result["skipped_existing"] == 5
