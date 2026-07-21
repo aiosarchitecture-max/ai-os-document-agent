@@ -28,4 +28,4 @@ jobs:
             https://ai-os-core-staging.onrender.com/health > health.json
       - name: Verify read-only legacy preview
         run: |
-          python -c 'import json; d=json.load(open("health.json")); p=d["legacy_task_migration_preview"]; assert d["status"]=="ok"; assert d["database"]=="ok"; assert p["status"]=="success"; assert p["received"]==5; assert p["importable"]+p["skipped_existing"]==5; print(json.dumps({"received":p["received"],"importable":p["importable"],"skipped_existing":p["skipped_existing"]}, sort_keys=True))'
+          python -c 'import json; d=json.load(open("health.json")); p=d.get("legacy_task_migration_preview",{}); print(json.dumps({"status":d.get("status"),"database":d.get("database"),"version":d.get("version"),"legacy_task_migration_preview":p}, sort_keys=True)); assert d.get("status")=="ok"; assert d.get("database")=="ok"; assert p.get("status")=="success"; assert p.get("received")==5; assert p.get("importable",0)+p.get("skipped_existing",0)==5'
