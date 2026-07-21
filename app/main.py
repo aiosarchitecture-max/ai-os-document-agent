@@ -5,7 +5,8 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .db import create_schema, get_db
+from .db import SessionLocal, create_schema, get_db
+from .legacy_migration import run_legacy_task_migration
 from .models import Task, TaskStatus
 from .schemas import (
     ApprovalRequest,
@@ -20,9 +21,28 @@ from .security import consume_approval, issue_approval, require_api_token
 from .services import call_apps_script, create_task, import_legacy_tasks, transition_task
 
 
+legacy_migration_preview: dict = {"status": "not_run"}
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    global legacy_migration_preview
     create_schema()
+    if settings.legacy_tasks_preview_on_startup:
+        try:
+            with SessionLocal() as db:
+                result = run_legacy_task_migration(db, apply=False)
+            legacy_migration_preview = {
+                "status": "success",
+                "received": result["received"],
+                "importable": result["importable"],
+                "skipped_existing": result["skipped_existing"],
+            }
+        except Exception as exc:
+            legacy_migration_preview = {
+                "status": "failed",
+                "error_type": type(exc).__name__,
+            }
     yield
 
 
@@ -38,7 +58,12 @@ def root() -> dict:
 @app.get("/health")
 def health(db: Session = Depends(get_db)) -> dict:
     db.execute(text("SELECT 1"))
-    return {"status": "ok", "version": settings.version, "database": "ok"}
+    return {
+        "status": "ok",
+        "version": settings.version,
+        "database": "ok",
+        "legacy_task_migration_preview": legacy_migration_preview,
+    }
 
 
 @app.get("/tasks", response_model=list[TaskRead], dependencies=[Depends(require_api_token)])
