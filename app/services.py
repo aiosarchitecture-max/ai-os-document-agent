@@ -214,6 +214,45 @@ async def sync_task_to_register(db: Session, task: Task) -> dict:
     return {"status": "synced", "version": task.version, "request_id": request_id}
 
 
+TASK_REGISTER_HEADERS = [
+    "task_id", "external_id", "status", "priority", "project_key", "owner",
+    "title", "description", "created_at", "updated_at", "version",
+]
+
+
+async def inspect_task_register() -> dict:
+    """Validate bridge access and the register schema without modifying either store."""
+    settings = get_settings()
+    if not settings.task_register_spreadsheet_id:
+        return {
+            "status": "disabled",
+            "ready": False,
+            "sheet_name": settings.task_register_sheet_name,
+            "checks": {"configured": False, "readable": False, "header_valid": False},
+        }
+
+    result = await call_apps_script(
+        "READ_SHEET_ROWS",
+        {
+            "spreadsheetId": settings.task_register_spreadsheet_id,
+            "sheetName": settings.task_register_sheet_name,
+            "rowCount": 1,
+            "columnCount": len(TASK_REGISTER_HEADERS),
+        },
+    )
+    rows = result.get("data", {}).get("rows", [])
+    actual = [str(value).strip() for value in rows[0]] if rows else []
+    header_valid = actual == TASK_REGISTER_HEADERS
+    return {
+        "status": "ready" if header_valid else "invalid_schema",
+        "ready": header_valid,
+        "sheet_name": settings.task_register_sheet_name,
+        "checks": {"configured": True, "readable": True, "header_valid": header_valid},
+        "expected_headers": TASK_REGISTER_HEADERS,
+        "actual_headers": actual,
+    }
+
+
 async def compare_task_register(db: Session) -> dict:
     """Compare PostgreSQL task versions with the optional Sheets register without writing."""
     settings = get_settings()
