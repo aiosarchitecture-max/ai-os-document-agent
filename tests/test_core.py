@@ -1,5 +1,9 @@
 import asyncio
+from pathlib import Path
 
+import httpx
+import pytest
+from fastapi import HTTPException
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -7,6 +11,11 @@ from app import services
 
 
 HEADERS = {"Authorization": "Bearer test-token"}
+
+
+def test_runtime_imports_canonical_services_module():
+    assert Path(services.__file__).resolve() == (Path.cwd() / "app" / "services.py").resolve()
+    assert not (Path.cwd() / "rebuild").exists()
 
 
 def test_health():
@@ -70,7 +79,7 @@ def test_dangerous_operation_target_must_match_payload():
         assert response.status_code == 400
 
 
-def test_apps_script_call_uses_post_secret_and_unique_request_id(monkeypatch):
+def test_apps_script_call_follows_realistic_google_redirect(monkeypatch):
     captured = {}
 
     class Settings:
@@ -79,34 +88,90 @@ def test_apps_script_call_uses_post_secret_and_unique_request_id(monkeypatch):
         request_timeout_seconds = 10
         version = "test-version"
 
-    class Response:
-        def raise_for_status(self):
-            return None
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.setdefault("requests", []).append(request)
+        if request.url.host == "script.google.test":
+            captured["body"] = __import__("json").loads(request.content)
+            return httpx.Response(302, headers={"Location": "https://script.googleusercontent.com/result"})
+        assert request.url.host == "script.googleusercontent.com"
+        return httpx.Response(200, json={"status": "success", "data": {"pong": True}})
 
-        def json(self):
-            return {"status": "success", "data": {"pong": True}}
+    real_client = httpx.AsyncClient
 
-    class Client:
-        def __init__(self, timeout):
-            captured["timeout"] = timeout
-
-        async def __aenter__(self):
-            return self
-
-        async def __aexit__(self, *_):
-            return None
-
-        async def post(self, url, json):
-            captured["url"] = url
-            captured["body"] = json
-            return Response()
+    def client_factory(*, timeout):
+        captured["timeout"] = timeout
+        return real_client(timeout=timeout, transport=httpx.MockTransport(handler))
 
     monkeypatch.setattr(services, "get_settings", lambda: Settings())
-    monkeypatch.setattr(services.httpx, "AsyncClient", Client)
+    monkeypatch.setattr(services.httpx, "AsyncClient", client_factory)
     result = asyncio.run(services.call_apps_script("PING", {}))
 
     assert result["status"] == "success"
-    assert captured["url"] == Settings.apps_script_webapp_url
     assert captured["body"]["secret"] == Settings.apps_script_secret
     assert captured["body"]["requestId"]
-    assert "secret" not in captured["url"]
+    assert len(captured["requests"]) == 2
+    assert captured["requests"][0].method == "POST"
+    assert captured["requests"][1].method == "GET"
+    assert "secret" not in str(captured["requests"][0].url)
+    assert captured["requests"][1].content == b""
+
+
+@pytest.mark.parametrize(
+    ("status", "location"),
+    [
+        (302, ""),
+        (302, "http://script.googleusercontent.com/result"),
+        (302, "https://evil.example/result"),
+        (307, "https://script.googleusercontent.com/result"),
+        (308, "https://script.googleusercontent.com/result"),
+    ],
+)
+def test_apps_script_rejects_unsafe_or_body_replaying_redirects(monkeypatch, status, location):
+    class Settings:
+        apps_script_webapp_url = "https://script.google.test/exec"
+        apps_script_secret = "private-test-secret"
+        request_timeout_seconds = 10
+        version = "test-version"
+
+    headers = {"Location": location} if location else {}
+    real_client = httpx.AsyncClient
+
+    def client_factory(*, timeout):
+        return real_client(
+            transport=httpx.MockTransport(lambda _request: httpx.Response(status, headers=headers)),
+            timeout=timeout,
+        )
+
+    monkeypatch.setattr(services, "get_settings", lambda: Settings())
+    monkeypatch.setattr(services.httpx, "AsyncClient", client_factory)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(services.call_apps_script("PING", {}))
+    assert raised.value.status_code == 502
+
+
+@pytest.mark.parametrize(
+    ("response", "expected"),
+    [
+        (httpx.Response(500, text="upstream failed"), "Server error"),
+        (httpx.Response(200, text="not-json"), "Apps Script request failed"),
+        (httpx.Response(200, json={"status": "error", "error": "Unauthorized"}), "Unauthorized"),
+    ],
+)
+def test_apps_script_failures_are_closed_and_mapped_to_502(monkeypatch, response, expected):
+    class Settings:
+        apps_script_webapp_url = "https://script.google.test/exec"
+        apps_script_secret = "private-test-secret"
+        request_timeout_seconds = 10
+        version = "test-version"
+
+    real_client = httpx.AsyncClient
+
+    def client_factory(*, timeout):
+        return real_client(transport=httpx.MockTransport(lambda _request: response), timeout=timeout)
+
+    monkeypatch.setattr(services, "get_settings", lambda: Settings())
+    monkeypatch.setattr(services.httpx, "AsyncClient", client_factory)
+    with pytest.raises(HTTPException) as raised:
+        asyncio.run(services.call_apps_script("PING", {}))
+    assert raised.value.status_code == 502
+    assert expected in str(raised.value.detail)

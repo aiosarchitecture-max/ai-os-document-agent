@@ -1,5 +1,6 @@
 from datetime import datetime, timezone
 from uuid import uuid4
+from urllib.parse import urlparse
 
 import httpx
 from fastapi import HTTPException
@@ -77,10 +78,25 @@ async def call_apps_script(action: str, payload: dict) -> dict:
         "requestId": str(uuid4()),
     }
     try:
+        # Follow exactly the redirect protocol used by Apps Script. Automatic
+        # redirect handling is deliberately disabled: a 307/308 response could
+        # otherwise replay the POST body (including the bridge secret) to an
+        # arbitrary host.
         async with httpx.AsyncClient(timeout=settings.request_timeout_seconds) as client:
             response = await client.post(settings.apps_script_webapp_url, json=body)
+            if response.status_code in {301, 302, 303}:
+                location = response.headers.get("location", "")
+                target = urlparse(location)
+                if target.scheme != "https" or not (
+                    target.hostname == "script.googleusercontent.com"
+                    or (target.hostname or "").endswith(".script.googleusercontent.com")
+                ):
+                    raise HTTPException(status_code=502, detail="Apps Script returned an unsafe redirect")
+                response = await client.get(location)
             response.raise_for_status()
             result = response.json()
+    except HTTPException:
+        raise
     except (httpx.HTTPError, ValueError) as exc:
         raise HTTPException(status_code=502, detail=f"Apps Script request failed: {exc}") from exc
     if result.get("status") != "success":
