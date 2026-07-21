@@ -16,7 +16,9 @@ class Settings(BaseSettings):
     apps_script_webapp_url: str = ""
     apps_script_secret: str = ""
     ai_os_root_folder_id: str = ""
-    legacy_tasks_preview_on_startup: bool = False
+    # The legacy snapshot preview is read-only and safe to run when Render has
+    # not synchronized a newly added render.yaml environment variable yet.
+    legacy_tasks_preview_on_startup: bool = True
     request_timeout_seconds: float = Field(default=60.0, ge=1, le=300)
 
 
