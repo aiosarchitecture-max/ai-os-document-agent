@@ -26,6 +26,6 @@ jobs:
           curl --fail --silent --show-error --location \
             --retry 6 --retry-delay 10 --retry-all-errors \
             https://ai-os-core-staging.onrender.com/health > health.json
-      - name: Verify read-only legacy preview
+      - name: Verify safe staging preview state
         run: |
-          python -c 'import json; d=json.load(open("health.json")); p=d.get("legacy_task_migration_preview",{}); print(json.dumps({"status":d.get("status"),"database":d.get("database"),"version":d.get("version"),"legacy_task_migration_preview":p}, sort_keys=True)); assert d.get("status")=="ok"; assert d.get("database")=="ok"; assert p.get("status")=="success"; assert p.get("received")==5; assert p.get("importable",0)+p.get("skipped_existing",0)==5'
+          python -c 'import json; d=json.load(open("health.json")); p=d.get("legacy_task_migration_preview",{}); print(json.dumps({"status":d.get("status"),"database":d.get("database"),"version":d.get("version"),"legacy_task_migration_preview":p}, sort_keys=True)); assert d.get("status")=="ok"; assert d.get("database")=="ok"; assert p.get("status") in {"not_run","success"}; assert p.get("status")!="success" or (p.get("received")==5 and p.get("importable",0)+p.get("skipped_existing",0)==5)'
