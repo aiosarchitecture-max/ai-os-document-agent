@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     apps_script_webapp_url: str = ""
     apps_script_secret: str = ""
     ai_os_root_folder_id: str = ""
-    legacy_tasks_auto_apply: bool = False
+    legacy_tasks_preview_on_startup: bool = False
     request_timeout_seconds: float = Field(default=60.0, ge=1, le=300)
 
 
