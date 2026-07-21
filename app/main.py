@@ -20,6 +20,7 @@ from .schemas import (
 from .security import consume_approval, issue_approval, require_api_token
 from .services import (
     call_apps_script,
+    compare_task_register,
     create_task,
     import_legacy_tasks,
     sync_task_to_register,
@@ -123,6 +124,11 @@ async def drive_execute(data: DangerousOperation, db: Session = Depends(get_db))
     consume_approval(db, data.operation, data.target, data.payload, data.approval_token)
     payload = {**data.payload, "target": data.target}
     return await call_apps_script(data.operation, payload)
+
+
+@app.get("/integrations/task-register/reconciliation", dependencies=[Depends(require_api_token)])
+async def task_register_reconciliation(db: Session = Depends(get_db)) -> dict:
+    return await compare_task_register(db)
 
 
 @app.get("/integrations/apps-script/health", dependencies=[Depends(require_api_token)])

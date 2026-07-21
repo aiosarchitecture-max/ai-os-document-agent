@@ -1,7 +1,7 @@
 /** AI_OS Google Workspace bridge v3.1. Configure secrets in Script Properties. */
-const BRIDGE_VERSION = '3.1.0';
+const BRIDGE_VERSION = '3.2.0';
 const ALLOWED_ACTIONS = Object.freeze([
-  'PING', 'READ_DOC', 'CREATE_DOC', 'APPEND_DOC', 'APPEND_SHEET_ROW',
+  'PING', 'READ_DOC', 'READ_SHEET_ROWS', 'CREATE_DOC', 'APPEND_DOC', 'APPEND_SHEET_ROW',
   'RENAME_FILE', 'MOVE_FILE', 'TRASH_FILE'
 ]);
 const WRITE_ACTIONS = Object.freeze([
@@ -74,6 +74,7 @@ function dispatch_(action, payload) {
   switch (action) {
     case 'PING': return {pong: true, rootFolderId: rootFolder_().getId()};
     case 'READ_DOC': return readDoc_(required_(payload, 'documentId'));
+    case 'READ_SHEET_ROWS': return readSheetRows_(payload);
     case 'CREATE_DOC': return createDoc_(payload);
     case 'APPEND_DOC': return appendDoc_(payload);
     case 'APPEND_SHEET_ROW': return appendSheetRow_(payload);
@@ -151,6 +152,22 @@ function appendDoc_(payload) {
   doc.getBody().appendParagraph(boundedText_(required_(payload, 'text'), MAX_TEXT_LENGTH, 'text'));
   doc.saveAndClose();
   return {documentId: documentId, updated: true};
+}
+
+function readSheetRows_(payload) {
+  const spreadsheetId = required_(payload, 'spreadsheetId');
+  assertWithinRoot_(DriveApp.getFileById(spreadsheetId));
+  const sheet = SpreadsheetApp.openById(spreadsheetId).getSheetByName(required_(payload, 'sheetName'));
+  if (!sheet) throw new Error('Sheet not found');
+  const rowCount = Math.min(Math.max(Number(payload.rowCount || 500), 1), 5000);
+  const columnCount = Math.min(Math.max(Number(payload.columnCount || 11), 1), MAX_SHEET_COLUMNS);
+  const lastRow = Math.min(sheet.getLastRow(), rowCount);
+  if (!lastRow) return {spreadsheetId: spreadsheetId, sheetName: sheet.getName(), rows: []};
+  return {
+    spreadsheetId: spreadsheetId,
+    sheetName: sheet.getName(),
+    rows: sheet.getRange(1, 1, lastRow, columnCount).getDisplayValues()
+  };
 }
 
 function appendSheetRow_(payload) {

@@ -214,6 +214,52 @@ async def sync_task_to_register(db: Session, task: Task) -> dict:
     return {"status": "synced", "version": task.version, "request_id": request_id}
 
 
+async def compare_task_register(db: Session) -> dict:
+    """Compare PostgreSQL task versions with the optional Sheets register without writing."""
+    settings = get_settings()
+    if not settings.task_register_spreadsheet_id:
+        return {"status": "disabled", "postgres_tasks": 0, "register_tasks": 0, "missing": 0, "stale": 0}
+
+    tasks = list(db.scalars(select(Task)))
+    result = await call_apps_script(
+        "READ_SHEET_ROWS",
+        {
+            "spreadsheetId": settings.task_register_spreadsheet_id,
+            "sheetName": settings.task_register_sheet_name,
+            "rowCount": 5000,
+            "columnCount": 11,
+        },
+    )
+    rows = result.get("data", {}).get("rows", [])
+    register_versions: dict[str, int] = {}
+    for row in rows:
+        if not isinstance(row, list) or len(row) < 11:
+            continue
+        task_id = str(row[0]).strip()
+        try:
+            version = int(row[10])
+        except (TypeError, ValueError):
+            continue
+        if task_id:
+            register_versions[task_id] = max(register_versions.get(task_id, 0), version)
+
+    missing_ids = sorted(task.id for task in tasks if task.id not in register_versions)
+    stale_ids = sorted(
+        task.id
+        for task in tasks
+        if task.id in register_versions and register_versions[task.id] < task.version
+    )
+    return {
+        "status": "success",
+        "postgres_tasks": len(tasks),
+        "register_tasks": len(register_versions),
+        "missing": len(missing_ids),
+        "stale": len(stale_ids),
+        "missing_task_ids": missing_ids,
+        "stale_task_ids": stale_ids,
+    }
+
+
 async def call_apps_script(action: str, payload: dict, request_id: str | None = None) -> dict:
     settings = get_settings()
     if not settings.apps_script_webapp_url or not settings.apps_script_secret:
