@@ -93,6 +93,41 @@ def test_task_idempotency_and_transition():
         assert moved.json()["status"] == "RESEARCH"
 
 
+def test_task_register_dual_write_is_persistently_idempotent(monkeypatch):
+    captured = []
+
+    class Settings:
+        task_register_spreadsheet_id = "tasks-sheet"
+        task_register_sheet_name = "AI_OS_TASKS"
+
+    async def fake_call(action, payload, request_id=None):
+        captured.append((action, payload, request_id))
+        return {"status": "success", "requestId": request_id, "duplicate": False}
+
+    monkeypatch.setattr(services, "get_settings", lambda: Settings())
+    monkeypatch.setattr(services, "call_apps_script", fake_call)
+    payload = {
+        "title": "Dual-write task",
+        "description": "Stored in PostgreSQL and the readable register",
+        "idempotency_key": "test-dual-write-1",
+    }
+    with TestClient(app) as client:
+        first = client.post("/tasks", json=payload, headers=HEADERS)
+        second = client.post("/tasks", json=payload, headers=HEADERS)
+
+    assert first.status_code == 200
+    assert second.status_code == 200
+    assert second.json()["id"] == first.json()["id"]
+    assert len(captured) == 1
+    action, register_payload, request_id = captured[0]
+    assert action == "APPEND_SHEET_ROW"
+    assert register_payload["spreadsheetId"] == "tasks-sheet"
+    assert register_payload["sheetName"] == "AI_OS_TASKS"
+    assert register_payload["values"][0] == first.json()["id"]
+    assert register_payload["values"][6] == "Dual-write task"
+    assert request_id == f"task-register:{first.json()['id']}:v1"
+
+
 def test_legacy_task_import_dry_run_then_apply_is_idempotent():
     payload = {
         "source_document_id": "legacy-doc-1",
