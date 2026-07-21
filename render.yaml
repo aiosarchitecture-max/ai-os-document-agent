@@ -1,12 +1,38 @@
+databases:
+  - name: ai-os-core-staging-db
+    plan: free
+    databaseName: aios_staging
+    user: aios_staging
+    region: frankfurt
+    ipAllowList: []
+
 services:
   - type: web
-    name: ai-os-document-agent
+    name: ai-os-core-staging
     env: python
     plan: free
+    region: frankfurt
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
     envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.13
+      - key: DATABASE_URL
+        fromDatabase:
+          name: ai-os-core-staging-db
+          property: connectionString
+      - key: ENVIRONMENT
+        value: staging
       - key: WEB_CONCURRENCY
         value: 1
       - key: REQUEST_TIMEOUT_SECONDS
         value: 60
+      - key: API_TOKEN
+        sync: false
+      - key: APPS_SCRIPT_WEBAPP_URL
+        sync: false
+      - key: APPS_SCRIPT_SECRET
+        sync: false
+      - key: AI_OS_ROOT_FOLDER_ID
+        sync: false

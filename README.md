@@ -1,39 +1,48 @@
-# AI_OS Document Agent — Sprostredkovateľ (Orchestrator)
+# AI_OS Core v3 foundation
 
-Aktuálna verzia: **v2.11.0-cap017-github-direct-write**
+This branch introduces a backward-compatible foundation for evolving AI_OS from a document-driven prototype into a durable digital-organization operating system.
 
-## Čo tento repozitár obsahuje
+## Architecture
 
-FastAPI server (`main.py`), ktorý slúži ako **Sprostredkovateľ (Orchestrator)** medzi Claude
-a Google Drive projektu AI_OS. Beží na Render: https://ai-os-document-agent.onrender.com
+- PostgreSQL is the operational source of truth for tasks, Work Orders, runs, approvals, audit events, and the document registry.
+- Google Drive remains the knowledge and document source of truth.
+- GitHub remains the code source of truth.
+- Apps Script remains a restricted Google write adapter during migration.
+- Render runs the API and one-shot Cron worker.
 
-## Architektúra (podľa AI_OS_GLOSSARY_v2.0)
+## Safety
 
-- **Zapisovateľ (Writer)** — Claude v konverzácii s Danielom. Jediný, kto skutočne vytvára,
-  presúva, premenováva alebo maže dokumenty v Google Drive.
-- **Sprostredkovateľ (Orchestrator)** — tento server. Spája Zapisovateľa, Kontrolóra a Drive.
-- **Kontrolór (Reviewer)** — nezávislý Claude Haiku model, ktorý na požiadanie kontroluje
-  dokumenty oproti AI_OS_DOCUMENTATION_STANDARD. Nemá žiadne oprávnenie na zápis.
-- **Zápisová vrstva (Apps Script)** — Google Apps Script projekt, ktorý ako jediný fyzicky
-  mení obsah Google Drive.
-- **Protokol kontrol (Quality Log)** — AI_OS_QUALITY_LOG, kde sa zaznamenáva každá kontrola.
+- Production `main` is unchanged until this draft PR is reviewed and merged.
+- API authentication uses an Authorization bearer header, not query parameters.
+- Dangerous Drive operations require a payload-bound, expiring, single-use approval.
+- The legacy bridge can run in parallel during migration.
 
-## Kľúčové schopnosti (Capabilities)
+## Local validation
 
-- **CAP-014 — MCP Bridge & File Operations**: priame MCP pripojenie pre Claude (`/mcp`),
-  nástroje na presun/premenovanie/trash súborov, s povinným `confirm_id`.
-- **CAP-015/016 — Quality Workflow**: `aios_review_document` nezávisle skontroluje dokument
-  (súlad so štandardom + správne umiestnenie), vráti `workflow_status`, zapíše do Quality Logu.
-- **CAP-017 — GitHub Direct Write Bridge**: `aios_github_write_file` zapisuje priamo do tohto
-  repozitára cez vlastný Personal Access Token, nezávisle od cudzej OAuth appky.
+```bash
+python -m venv .venv
+. .venv/bin/activate
+pip install -r requirements.txt
+pytest -q
+uvicorn app.main:app --reload
+```
 
-## Premenné prostredia (Render)
+## Required production secrets
 
-`API_TOKEN`, `APPS_SCRIPT_WEBAPP_URL`, `APPS_SCRIPT_SECRET`, `AI_OS_ROOT_FOLDER_ID`,
-`ANTHROPIC_API_KEY`, `REVIEWER_MODEL` (voliteľné), `GITHUB_PAT`, `GITHUB_OWNER`, `GITHUB_REPO`
+- `API_TOKEN`
+- `APPROVAL_SIGNING_KEY`
+- `APPS_SCRIPT_WEBAPP_URL`
+- `APPS_SCRIPT_SECRET`
+- `AI_OS_ROOT_FOLDER_ID`
+- provider API keys required by individual agents
 
-## Poznámka k histórii
+## Migration sequence
 
-Staršie README opisovalo samostatný, nikdy nenasadený návrh ("v0.9.0 Knowledge Layer").
-Nahradené, aby presne zodpovedalo tomu, čo skutočne beží na Render. Tento zápis bol vykonaný
-priamo cez CAP-017 GitHub Direct Write Bridge, 16.7.2026.
+1. Deploy PostgreSQL and run schema migration.
+2. Import current `AI_OS_TASKS` records with stable external IDs.
+3. Enable dual-write to PostgreSQL and the human-readable Drive register.
+4. Compare both stores and resolve discrepancies.
+5. Switch reads to PostgreSQL.
+6. Keep Drive as a synchronized operational view and knowledge store.
+7. Add Creator, Opponent, Reviewer, and approval gates as isolated workflow stages.
+
