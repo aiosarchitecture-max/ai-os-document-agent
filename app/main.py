@@ -31,12 +31,15 @@ async def lifespan(_: FastAPI):
     if settings.legacy_tasks_preview_on_startup:
         try:
             with SessionLocal() as db:
-                result = run_legacy_task_migration(\n                    db, apply=settings.legacy_tasks_apply_on_startup\n                )
+                result = run_legacy_task_migration(
+                    db, apply=settings.legacy_tasks_apply_on_startup
+                )
             legacy_migration_preview = {
                 "status": "success",
                 "received": result["received"],
                 "importable": result["importable"],
-                "skipped_existing": result["skipped_existing"],\n                "applied": result["applied"],
+                "skipped_existing": result["skipped_existing"],
+                "applied": result["applied"],
             }
         except Exception as exc:
             legacy_migration_preview = {
