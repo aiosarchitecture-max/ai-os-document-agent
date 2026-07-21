@@ -127,6 +127,27 @@ async def drive_execute(data: DangerousOperation, db: Session = Depends(get_db))
     return await call_apps_script(data.operation, payload)
 
 
+@app.get("/integrations/task-register/status")
+async def task_register_status(db: Session = Depends(get_db)) -> dict:
+    """Return only aggregate, non-sensitive register diagnostics for deployment checks."""
+    readiness = await inspect_task_register()
+    response = {
+        "status": readiness.get("status"),
+        "ready": bool(readiness.get("ready")),
+        "dual_write_enabled": bool(settings.task_register_dual_write_enabled),
+        "checks": readiness.get("checks", {}),
+        "postgres_tasks": 0,
+        "register_tasks": 0,
+        "missing": 0,
+        "stale": 0,
+    }
+    if response["ready"]:
+        reconciliation = await compare_task_register(db)
+        for key in ("postgres_tasks", "register_tasks", "missing", "stale"):
+            response[key] = int(reconciliation.get(key, 0))
+    return response
+
+
 @app.get("/integrations/task-register/readiness", dependencies=[Depends(require_api_token)])
 async def task_register_readiness() -> dict:
     return await inspect_task_register()
