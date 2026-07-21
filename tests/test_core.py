@@ -93,6 +93,68 @@ def test_task_idempotency_and_transition():
         assert moved.json()["status"] == "RESEARCH"
 
 
+def test_complete_task_workflow_is_persisted_and_auditable(monkeypatch):
+    monkeypatch.setattr("app.main.settings.task_register_dual_write_enabled", False)
+    payload = {
+        "title": "Overiť celý PostgreSQL workflow",
+        "idempotency_key": "test-complete-workflow-1",
+    }
+    workflow = ["RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"]
+
+    with TestClient(app) as client:
+        created = client.post("/tasks", json=payload, headers=HEADERS)
+        assert created.status_code == 200
+        task_id = created.json()["id"]
+
+        for status in workflow:
+            moved = client.post(
+                f"/tasks/{task_id}/transition?new_status={status}",
+                headers=HEADERS,
+            )
+            assert moved.status_code == 200
+            assert moved.json()["status"] == status
+
+        persisted = next(
+            task for task in client.get("/tasks", headers=HEADERS).json()
+            if task["id"] == task_id
+        )
+        assert persisted["status"] == "DONE"
+        audit = client.get(f"/tasks/{task_id}/audit", headers=HEADERS)
+
+    assert audit.status_code == 200
+    events = audit.json()
+    assert [event["event_type"] for event in events] == [
+        "TASK_CREATED",
+        *(["TASK_TRANSITION"] * len(workflow)),
+    ]
+    assert [event["payload"]["to"] for event in events[1:]] == workflow
+
+
+def test_invalid_transition_does_not_change_task_or_audit(monkeypatch):
+    monkeypatch.setattr("app.main.settings.task_register_dual_write_enabled", False)
+    payload = {
+        "title": "Odmietnuť neplatný prechod",
+        "idempotency_key": "test-invalid-transition-1",
+    }
+    with TestClient(app) as client:
+        created = client.post("/tasks", json=payload, headers=HEADERS)
+        task_id = created.json()["id"]
+        rejected = client.post(
+            f"/tasks/{task_id}/transition?new_status=DONE",
+            headers=HEADERS,
+        )
+        audit = client.get(f"/tasks/{task_id}/audit", headers=HEADERS)
+
+    assert rejected.status_code == 409
+    assert [event["event_type"] for event in audit.json()] == ["TASK_CREATED"]
+
+
+def test_task_audit_requires_authentication_and_existing_task():
+    with TestClient(app) as client:
+        assert client.get("/tasks/missing/audit").status_code == 401
+        assert client.get("/tasks/missing/audit", headers=HEADERS).status_code == 404
+
+
 @pytest.mark.parametrize(
     ("detail", "expected_code"),
     [
