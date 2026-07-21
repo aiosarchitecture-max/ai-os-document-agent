@@ -16,3 +16,16 @@ jobs:
       - run: python -m compileall app tests migrations
       - run: python -m pytest -q
       - run: node apps-script/test/bridge.test.js
+
+  staging-migration-preview:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Read public staging health
+        run: |
+          curl --fail --silent --show-error --location \
+            --retry 6 --retry-delay 10 --retry-all-errors \
+            https://ai-os-core-staging.onrender.com/health > health.json
+      - name: Verify read-only legacy preview
+        run: |
+          python -c 'import json; d=json.load(open("health.json")); p=d["legacy_task_migration_preview"]; assert d["status"]=="ok"; assert d["database"]=="ok"; assert p["status"]=="success"; assert p["received"]==5; assert p["importable"]+p["skipped_existing"]==5; print(json.dumps({"received":p["received"],"importable":p["importable"],"skipped_existing":p["skipped_existing"]}, sort_keys=True))'
