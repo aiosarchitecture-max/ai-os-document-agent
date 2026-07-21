@@ -36,7 +36,7 @@ uvicorn app.main:app --reload
 - `APPS_SCRIPT_WEBAPP_URL`
 - `APPS_SCRIPT_SECRET`
 - `AI_OS_ROOT_FOLDER_ID`
-- `TASK_REGISTER_SPREADSHEET_ID` (optional; enables task dual-write)
+- `TASK_REGISTER_SPREADSHEET_ID` (configures register access; does not enable writes)
 - `TASK_REGISTER_SHEET_NAME` (defaults to `AI_OS_TASKS`)
 - `TASK_REGISTER_DUAL_WRITE_ENABLED` (defaults to `false`; enable only after clean reconciliation)
 - provider API keys required by individual agents
