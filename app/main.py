@@ -133,14 +133,24 @@ async def task_register_status(db: Session = Depends(get_db)) -> dict:
     try:
         readiness = await inspect_task_register()
     except HTTPException as exc:
-        detail = exc.detail if isinstance(exc.detail, dict) else {}
-        error = str(detail.get("error", ""))
+        detail = exc.detail
+        if isinstance(detail, dict):
+            error = " ".join(
+                str(detail.get(key, "")) for key in ("error", "message", "code")
+            )
+        else:
+            error = str(detail)
         error_code = "bridge_error"
         for needle, code in (
             ("Unsupported action", "bridge_version_outdated"),
             ("outside AI_OS root", "register_outside_root"),
             ("Sheet not found", "sheet_not_found"),
+            ("native Google Sheet", "register_not_native"),
             ("Unauthorized", "bridge_auth_failed"),
+            ("UNAUTHORIZED", "bridge_auth_failed"),
+            ("timed out", "bridge_timeout"),
+            ("unsafe redirect", "bridge_unsafe_redirect"),
+            ("Apps Script request failed", "bridge_transport_error"),
         ):
             if needle in error:
                 error_code = code
