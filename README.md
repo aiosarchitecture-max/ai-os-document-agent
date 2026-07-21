@@ -38,6 +38,7 @@ uvicorn app.main:app --reload
 - `AI_OS_ROOT_FOLDER_ID`
 - `TASK_REGISTER_SPREADSHEET_ID` (optional; enables task dual-write)
 - `TASK_REGISTER_SHEET_NAME` (defaults to `AI_OS_TASKS`)
+- `TASK_REGISTER_DUAL_WRITE_ENABLED` (defaults to `false`; enable only after clean reconciliation)
 - provider API keys required by individual agents
 
 ## Migration status
@@ -54,6 +55,6 @@ uvicorn app.main:app --reload
 ## Safe activation order
 
 1. Deploy the Apps Script bridge version that supports `READ_SHEET_ROWS`.
-2. Set `TASK_REGISTER_SPREADSHEET_ID` and confirm `TASK_REGISTER_SHEET_NAME`.
-3. Call the secured reconciliation endpoint and resolve every missing or stale item.
-4. Enable and verify dual-write only after reconciliation is clean.
+2. Set `TASK_REGISTER_SPREADSHEET_ID` and confirm `TASK_REGISTER_SHEET_NAME`; keep `TASK_REGISTER_DUAL_WRITE_ENABLED=false`.
+3. Call the secured readiness and reconciliation endpoints and resolve every missing or stale item.
+4. Set `TASK_REGISTER_DUAL_WRITE_ENABLED=true` only after reconciliation is clean, then verify one controlled write.
