@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     # Optional human-readable Google Sheets task register. PostgreSQL remains authoritative.
     task_register_spreadsheet_id: str = ""
     task_register_sheet_name: str = "AI_OS_TASKS"
+    # Configure the register independently from write activation so readiness
+    # and reconciliation can run before any external row is appended.
+    task_register_dual_write_enabled: bool = False
     # The legacy snapshot preview is read-only and safe to run when Render has
     # not synchronized a newly added render.yaml environment variable yet.
     legacy_tasks_preview_on_startup: bool = True
