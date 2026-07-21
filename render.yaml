@@ -28,6 +28,8 @@ services:
         value: 1
       - key: REQUEST_TIMEOUT_SECONDS
         value: 60
+      - key: LEGACY_TASKS_PREVIEW_ON_STARTUP
+        value: true
       - key: API_TOKEN
         sync: false
       - key: APPS_SCRIPT_WEBAPP_URL
