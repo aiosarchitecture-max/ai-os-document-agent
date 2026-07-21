@@ -18,7 +18,13 @@ from .schemas import (
     TaskRead,
 )
 from .security import consume_approval, issue_approval, require_api_token
-from .services import call_apps_script, create_task, import_legacy_tasks, transition_task
+from .services import (
+    call_apps_script,
+    create_task,
+    import_legacy_tasks,
+    sync_task_to_register,
+    transition_task,
+)
 
 
 legacy_migration_preview: dict = {"status": "not_run"}
@@ -78,8 +84,10 @@ def list_tasks(status: TaskStatus | None = None, limit: int = 100, db: Session =
 
 
 @app.post("/tasks", response_model=TaskRead, dependencies=[Depends(require_api_token)])
-def task_create(data: TaskCreate, db: Session = Depends(get_db)):
-    return create_task(db, data)
+async def task_create(data: TaskCreate, db: Session = Depends(get_db)):
+    task = create_task(db, data)
+    await sync_task_to_register(db, task)
+    return task
 
 
 @app.post(

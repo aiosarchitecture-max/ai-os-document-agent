@@ -16,6 +16,9 @@ class Settings(BaseSettings):
     apps_script_webapp_url: str = ""
     apps_script_secret: str = ""
     ai_os_root_folder_id: str = ""
+    # Optional human-readable Google Sheets task register. PostgreSQL remains authoritative.
+    task_register_spreadsheet_id: str = ""
+    task_register_sheet_name: str = "AI_OS_TASKS"
     # The legacy snapshot preview is read-only and safe to run when Render has
     # not synchronized a newly added render.yaml environment variable yet.
     legacy_tasks_preview_on_startup: bool = True

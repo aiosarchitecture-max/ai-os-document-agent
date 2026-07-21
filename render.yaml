@@ -38,3 +38,7 @@ services:
         sync: false
       - key: AI_OS_ROOT_FOLDER_ID
         sync: false
+      - key: TASK_REGISTER_SPREADSHEET_ID
+        sync: false
+      - key: TASK_REGISTER_SHEET_NAME
+        value: AI_OS_TASKS

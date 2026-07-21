@@ -144,6 +144,76 @@ def transition_task(db: Session, task: Task, new_status: TaskStatus, actor: str 
     return task
 
 
+async def sync_task_to_register(db: Session, task: Task) -> dict:
+    """Append one task version to the optional human-readable Sheets register."""
+    settings = get_settings()
+    if not settings.task_register_spreadsheet_id:
+        return {"status": "disabled"}
+
+    synced_events = db.scalars(
+        select(AuditEvent).where(
+            AuditEvent.event_type == "TASK_REGISTER_SYNCED",
+            AuditEvent.entity_type == "task",
+            AuditEvent.entity_id == task.id,
+        )
+    )
+    if any(event.payload.get("version") == task.version for event in synced_events):
+        return {"status": "already_synced", "version": task.version}
+
+    request_id = f"task-register:{task.id}:v{task.version}"
+    values = [
+        task.id,
+        task.external_id or "",
+        task.status.value,
+        task.priority,
+        task.project_key,
+        task.owner,
+        task.title,
+        task.description,
+        task.created_at.isoformat(),
+        task.updated_at.isoformat(),
+        task.version,
+    ]
+    try:
+        result = await call_apps_script(
+            "APPEND_SHEET_ROW",
+            {
+                "spreadsheetId": settings.task_register_spreadsheet_id,
+                "sheetName": settings.task_register_sheet_name,
+                "values": values,
+            },
+            request_id=request_id,
+        )
+    except HTTPException as exc:
+        db.add(
+            AuditEvent(
+                event_type="TASK_REGISTER_SYNC_FAILED",
+                actor="system",
+                entity_type="task",
+                entity_id=task.id,
+                payload={"version": task.version, "error_type": type(exc).__name__},
+            )
+        )
+        db.commit()
+        raise
+
+    db.add(
+        AuditEvent(
+            event_type="TASK_REGISTER_SYNCED",
+            actor="system",
+            entity_type="task",
+            entity_id=task.id,
+            payload={
+                "version": task.version,
+                "request_id": request_id,
+                "duplicate": bool(result.get("duplicate")),
+            },
+        )
+    )
+    db.commit()
+    return {"status": "synced", "version": task.version, "request_id": request_id}
+
+
 async def call_apps_script(action: str, payload: dict, request_id: str | None = None) -> dict:
     settings = get_settings()
     if not settings.apps_script_webapp_url or not settings.apps_script_secret:
