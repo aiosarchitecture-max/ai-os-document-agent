@@ -149,6 +149,8 @@ async def sync_task_to_register(db: Session, task: Task) -> dict:
     settings = get_settings()
     if not settings.task_register_spreadsheet_id:
         return {"status": "disabled"}
+    if not settings.task_register_dual_write_enabled:
+        return {"status": "disabled"}
 
     synced_events = db.scalars(
         select(AuditEvent).where(
