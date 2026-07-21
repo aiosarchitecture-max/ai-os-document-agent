@@ -55,3 +55,50 @@ def test_task_register_comparison_is_disabled_without_sheet(monkeypatch):
         "missing": 0,
         "stale": 0,
     }
+
+
+def test_task_register_preflight_validates_exact_header(monkeypatch):
+    settings = SimpleNamespace(
+        task_register_spreadsheet_id="register-id",
+        task_register_sheet_name="AI_OS_TASKS",
+    )
+    monkeypatch.setattr(services, "get_settings", lambda: settings)
+
+    async def fake_call(action, payload, request_id=None):
+        assert action == "READ_SHEET_ROWS"
+        assert payload["rowCount"] == 1
+        return {"status": "success", "data": {"rows": [services.TASK_REGISTER_HEADERS]}}
+
+    monkeypatch.setattr(services, "call_apps_script", fake_call)
+    result = asyncio.run(services.inspect_task_register())
+    assert result["status"] == "ready"
+    assert result["ready"] is True
+    assert result["checks"] == {"configured": True, "readable": True, "header_valid": True}
+
+
+def test_task_register_preflight_rejects_wrong_header(monkeypatch):
+    settings = SimpleNamespace(
+        task_register_spreadsheet_id="register-id",
+        task_register_sheet_name="AI_OS_TASKS",
+    )
+    monkeypatch.setattr(services, "get_settings", lambda: settings)
+
+    async def fake_call(action, payload, request_id=None):
+        return {"status": "success", "data": {"rows": [["wrong", "header"]]}}
+
+    monkeypatch.setattr(services, "call_apps_script", fake_call)
+    result = asyncio.run(services.inspect_task_register())
+    assert result["status"] == "invalid_schema"
+    assert result["ready"] is False
+    assert result["checks"]["header_valid"] is False
+
+
+def test_task_register_preflight_is_disabled_without_configuration(monkeypatch):
+    settings = SimpleNamespace(
+        task_register_spreadsheet_id="",
+        task_register_sheet_name="AI_OS_TASKS",
+    )
+    monkeypatch.setattr(services, "get_settings", lambda: settings)
+    result = asyncio.run(services.inspect_task_register())
+    assert result["status"] == "disabled"
+    assert result["ready"] is False
