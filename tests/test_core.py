@@ -93,6 +93,35 @@ def test_task_idempotency_and_transition():
         assert moved.json()["status"] == "RESEARCH"
 
 
+@pytest.mark.parametrize(
+    ("detail", "expected_code"),
+    [
+        (
+            {"status": "error", "code": "EXCEPTION", "message": "Error: Spreadsheet is outside AI_OS root"},
+            "register_outside_root",
+        ),
+        (
+            {"status": "error", "code": "UNAUTHORIZED"},
+            "bridge_auth_failed",
+        ),
+        ("Apps Script request failed: timed out", "bridge_timeout"),
+    ],
+)
+def test_public_task_register_status_classifies_safe_bridge_errors(monkeypatch, detail, expected_code):
+    async def fake_inspect():
+        raise HTTPException(status_code=502, detail=detail)
+
+    monkeypatch.setattr("app.main.inspect_task_register", fake_inspect)
+    monkeypatch.setattr("app.main.settings.task_register_dual_write_enabled", False)
+    with TestClient(app) as client:
+        response = client.get("/integrations/task-register/status")
+
+    assert response.status_code == 200
+    assert response.json()["error_code"] == expected_code
+    assert response.json()["dual_write_enabled"] is False
+    assert response.json()["ready"] is False
+
+
 def test_task_register_dual_write_is_persistently_idempotent(monkeypatch):
     captured = []
 
