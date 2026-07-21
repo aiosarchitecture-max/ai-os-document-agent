@@ -99,6 +99,7 @@ def test_task_register_dual_write_is_persistently_idempotent(monkeypatch):
     class Settings:
         task_register_spreadsheet_id = "tasks-sheet"
         task_register_sheet_name = "AI_OS_TASKS"
+        task_register_dual_write_enabled = True
 
     async def fake_call(action, payload, request_id=None):
         captured.append((action, payload, request_id))
