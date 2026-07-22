@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, Path
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -206,6 +206,20 @@ async def apps_script_create_document(data: CreateDocumentRequest) -> dict:
     )
 
 
+@app.get(
+    "/integrations/apps-script/documents/{document_id}",
+    dependencies=[Depends(require_api_token)],
+)
+async def apps_script_read_document(
+    document_id: str = Path(
+        min_length=10,
+        max_length=200,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    ),
+) -> dict:
+    return await call_apps_script("READ_DOC", {"documentId": document_id})
+
+
 @app.get("/boot", dependencies=[Depends(require_api_token)])
 def boot() -> dict:
     return {
@@ -215,4 +229,3 @@ def boot() -> dict:
         "workflow": ["NEW", "RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"],
         "compatibility": "Legacy bridge remains available during migration",
     }
-

@@ -37,6 +37,7 @@ def test_openapi_declares_bearer_security_scheme():
     assert schema["components"]["securitySchemes"]["BearerAuth"]["scheme"] == "bearer"
     assert schema["paths"]["/tasks"]["post"]["security"] == [{"BearerAuth": []}]
     assert schema["paths"]["/integrations/apps-script/documents"]["post"]["security"] == [{"BearerAuth": []}]
+    assert schema["paths"]["/integrations/apps-script/documents/{document_id}"]["get"]["security"] == [{"BearerAuth": []}]
 
 
 def test_create_document_is_root_scoped_and_idempotent(monkeypatch):
@@ -70,6 +71,42 @@ def test_create_document_rejects_invalid_request_id():
             json={"request_id": "bad id", "title": "AI_OS staging test"},
             headers=HEADERS,
         )
+    assert response.status_code == 422
+
+
+def test_read_document_is_read_only_and_root_validation_is_delegated_to_bridge(monkeypatch):
+    captured = []
+
+    async def fake_call(action, payload, request_id=None):
+        captured.append((action, payload, request_id))
+        return {
+            "status": "success",
+            "data": {"documentId": payload["documentId"], "name": "Test", "text": "ok"},
+        }
+
+    monkeypatch.setattr("app.main.call_apps_script", fake_call)
+    with TestClient(app) as client:
+        response = client.get(
+            "/integrations/apps-script/documents/doc_1234567890",
+            headers=HEADERS,
+        )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["text"] == "ok"
+    assert captured == [("READ_DOC", {"documentId": "doc_1234567890"}, None)]
+
+
+def test_read_document_rejects_invalid_document_id_without_calling_bridge(monkeypatch):
+    async def must_not_call(*_args, **_kwargs):
+        raise AssertionError("bridge must not be called")
+
+    monkeypatch.setattr("app.main.call_apps_script", must_not_call)
+    with TestClient(app) as client:
+        response = client.get(
+            "/integrations/apps-script/documents/bad%20id",
+            headers=HEADERS,
+        )
+
     assert response.status_code == 422
 
 
