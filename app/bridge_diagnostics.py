@@ -14,6 +14,12 @@ def classify_bridge_error(detail: object) -> str:
     patterns = (
         ("apps script bridge is not configured", "bridge_not_configured"),
         ("bridge_not_configured", "bridge_not_configured"),
+        ("bridge_http_error", "bridge_http_error"),
+        ("bridge_invalid_response", "bridge_invalid_response"),
+        ("bridge_upstream_error", "bridge_upstream_error"),
+        ("bridge_transport_error", "bridge_transport_error"),
+        ("bridge_timeout", "bridge_timeout"),
+        ("bridge_auth_failed", "bridge_auth_failed"),
         ("unsupported action", "bridge_version_outdated"),
         ("outside ai_os root", "register_outside_root"),
         ("sheet not found", "sheet_not_found"),

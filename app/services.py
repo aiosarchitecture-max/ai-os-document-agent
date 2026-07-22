@@ -8,6 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from .bridge_diagnostics import classify_bridge_error
 from .config import get_settings
 from .models import AuditEvent, Task, TaskStatus, WorkOrder
 from .schemas import LegacyTaskImportRequest, LegacyTaskImportResult, TaskCreate
@@ -304,7 +305,7 @@ async def compare_task_register(db: Session) -> dict:
 async def call_apps_script(action: str, payload: dict, request_id: str | None = None) -> dict:
     settings = get_settings()
     if not settings.apps_script_webapp_url or not settings.apps_script_secret:
-        raise HTTPException(status_code=503, detail="Apps Script bridge is not configured")
+        raise HTTPException(status_code=503, detail={"code": "bridge_not_configured"})
     body = {
         "secret": settings.apps_script_secret,
         "action": action,
@@ -332,9 +333,23 @@ async def call_apps_script(action: str, payload: dict, request_id: str | None = 
             result = response.json()
     except HTTPException:
         raise
-    except (httpx.HTTPError, ValueError) as exc:
-        raise HTTPException(status_code=502, detail=f"Apps Script request failed: {exc}") from exc
+    except httpx.TimeoutException as exc:
+        raise HTTPException(status_code=504, detail={"code": "bridge_timeout"}) from exc
+    except httpx.HTTPStatusError as exc:
+        code = (
+            "bridge_auth_failed"
+            if exc.response.status_code in {401, 403}
+            else "bridge_http_error"
+        )
+        raise HTTPException(status_code=502, detail={"code": code}) from exc
+    except httpx.RequestError as exc:
+        raise HTTPException(status_code=502, detail={"code": "bridge_transport_error"}) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=502, detail={"code": "bridge_invalid_response"}) from exc
     if result.get("status") != "success":
-        raise HTTPException(status_code=502, detail=result)
+        code = classify_bridge_error(result)
+        if code == "bridge_error":
+            code = "bridge_upstream_error"
+        raise HTTPException(status_code=502, detail={"code": code})
     return result
 

@@ -389,9 +389,9 @@ def test_apps_script_rejects_unsafe_or_body_replaying_redirects(monkeypatch, sta
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
-        (httpx.Response(500, text="upstream failed"), "Server error"),
-        (httpx.Response(200, text="not-json"), "Apps Script request failed"),
-        (httpx.Response(200, json={"status": "error", "error": "Unauthorized"}), "Unauthorized"),
+        (httpx.Response(500, text="upstream failed"), "bridge_http_error"),
+        (httpx.Response(200, text="not-json"), "bridge_invalid_response"),
+        (httpx.Response(200, json={"status": "error", "error": "Unauthorized"}), "bridge_auth_failed"),
     ],
 )
 def test_apps_script_failures_are_closed_and_mapped_to_502(monkeypatch, response, expected):
