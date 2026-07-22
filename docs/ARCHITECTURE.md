@@ -22,5 +22,4 @@ Apps Script is a least-privilege adapter for Google-native operations. GitHub ow
 
 ## Migration principle
 
-Use a strangler migration. Keep the current v2.14 bridge operational, add the new durable core beside it, dual-write, verify, and only then retire document-backed operational state.
-
+Use a strangler migration. Keep the current bridge available for Google-native document operations while the durable core owns task state in PostgreSQL. Google Sheets is not a second task database; any future task register is a one-way, replaceable projection from PostgreSQL. The legacy dual-write flag remains disabled.
