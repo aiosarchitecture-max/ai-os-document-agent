@@ -8,6 +8,12 @@ from app.bridge_diagnostics import classify_bridge_error
     [
         ("Apps Script bridge is not configured", "bridge_not_configured"),
         ({"code": "bridge_not_configured"}, "bridge_not_configured"),
+        ({"code": "bridge_http_error"}, "bridge_http_error"),
+        ({"code": "bridge_invalid_response"}, "bridge_invalid_response"),
+        ({"code": "bridge_upstream_error"}, "bridge_upstream_error"),
+        ({"code": "bridge_transport_error"}, "bridge_transport_error"),
+        ({"code": "bridge_timeout"}, "bridge_timeout"),
+        ({"code": "bridge_auth_failed"}, "bridge_auth_failed"),
         ("Unsupported action READ_SHEET_ROWS", "bridge_version_outdated"),
         ("File is outside AI_OS root", "register_outside_root"),
         ("Sheet not found", "sheet_not_found"),
