@@ -100,12 +100,12 @@ function test(name, fn) { tests.push([name, fn]); }
 
 test('fails closed when the bridge secret is not configured', () => {
   const { context } = loadBridge({ removeSecret: true });
-  assert.match(post(context, { secret: 'anything', action: 'PING' }).error, /not configured/);
+  assert.equal(post(context, { secret: 'anything', action: 'PING' }).code, 'bridge_secret_not_configured');
 });
 
 test('rejects an incorrect secret', () => {
   const { context } = loadBridge();
-  assert.match(post(context, { secret: 'wrong', action: 'PING' }).error, /Unauthorized/);
+  assert.equal(post(context, { secret: 'wrong', action: 'PING' }).code, 'bridge_auth_failed');
 });
 
 test('accepts an authenticated ping and verifies the root', () => {
@@ -118,19 +118,19 @@ test('accepts an authenticated ping and verifies the root', () => {
 test('fails closed when the AI_OS root is not configured', () => {
   const { context } = loadBridge({ removeRoot: true });
   const result = post(context, { secret: 'test-secret', action: 'PING' });
-  assert.match(result.error, /root folder is not configured/);
+  assert.equal(result.code, 'root_not_configured');
 });
 
 test('requires a requestId for every write operation', () => {
   const { context } = loadBridge();
   const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', payload: { fileId: 'insideFile', name: 'new' } });
-  assert.match(result.error, /requestId is required/);
+  assert.equal(result.code, 'bridge_invalid_request');
 });
 
 test('rejects writes outside the configured AI_OS root', () => {
   const { context } = loadBridge();
   const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', requestId: 'r1', payload: { fileId: 'outsideFile', name: 'new' } });
-  assert.match(result.error, /outside AI_OS root/);
+  assert.equal(result.code, 'register_outside_root');
 });
 
 test('accepts a file directly in root when Drive omits all parents', () => {

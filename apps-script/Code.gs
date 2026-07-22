@@ -1,5 +1,5 @@
 /** AI_OS Google Workspace bridge v3.1. Configure secrets in Script Properties. */
-const BRIDGE_VERSION = '3.2.2';
+const BRIDGE_VERSION = '3.2.3';
 const ALLOWED_ACTIONS = Object.freeze([
   'PING', 'READ_DOC', 'READ_SHEET_ROWS', 'CREATE_DOC', 'APPEND_DOC', 'APPEND_SHEET_ROW',
   'RENAME_FILE', 'MOVE_FILE', 'TRASH_FILE'
@@ -42,8 +42,31 @@ function doPost(e) {
     }
   } catch (error) {
     console.error(JSON.stringify({requestId: fallbackRequestId, error: String(error), stack: error.stack || ''}));
-    return json_({status: 'error', requestId: fallbackRequestId, error: String(error.message || error)});
+    return json_({status: 'error', requestId: fallbackRequestId, code: bridgeErrorCode_(error)});
   }
+}
+
+function bridgeErrorCode_(error) {
+  const message = String((error && error.message) || error || '').toLowerCase();
+  const patterns = [
+    ['bridge secret is not configured', 'bridge_secret_not_configured'],
+    ['unauthorized', 'bridge_auth_failed'],
+    ['ai_os root folder is not configured', 'root_not_configured'],
+    ['outside ai_os root', 'register_outside_root'],
+    ['sheet not found', 'sheet_not_found'],
+    ['file not found', 'drive_item_not_found'],
+    ['folder not found', 'drive_item_not_found'],
+    ['no item with the given id', 'drive_item_not_found'],
+    ['you do not have permission', 'workspace_permission_denied'],
+    ['access denied', 'workspace_permission_denied'],
+    ['unsupported action', 'bridge_version_outdated'],
+    ['missing field:', 'bridge_invalid_request'],
+    ['requestid is required', 'bridge_invalid_request']
+  ];
+  for (let i = 0; i < patterns.length; i++) {
+    if (message.indexOf(patterns[i][0]) !== -1) return patterns[i][1];
+  }
+  return 'apps_script_internal_error';
 }
 
 function authenticate_(supplied) {
