@@ -1,5 +1,5 @@
 /** AI_OS Google Workspace bridge v3.1. Configure secrets in Script Properties. */
-const BRIDGE_VERSION = '3.2.3';
+const BRIDGE_VERSION = '3.2.4';
 const ALLOWED_ACTIONS = Object.freeze([
   'PING', 'READ_DOC', 'READ_SHEET_ROWS', 'CREATE_DOC', 'APPEND_DOC', 'APPEND_SHEET_ROW',
   'RENAME_FILE', 'MOVE_FILE', 'TRASH_FILE'
@@ -12,7 +12,13 @@ const MAX_READ_LENGTH = 500000;
 const MAX_SHEET_COLUMNS = 200;
 
 function doGet() {
-  return json_({status: 'success', service: 'AI_OS Workspace bridge', version: BRIDGE_VERSION});
+  const secretState = bridgeSecretState_();
+  return json_({
+    status: 'success',
+    service: 'AI_OS Workspace bridge',
+    version: BRIDGE_VERSION,
+    secretStatus: secretState.code || 'configured'
+  });
 }
 
 function doPost(e) {
@@ -49,7 +55,9 @@ function doPost(e) {
 function bridgeErrorCode_(error) {
   const message = String((error && error.message) || error || '').toLowerCase();
   const patterns = [
-    ['bridge secret is not configured', 'bridge_secret_not_configured'],
+    ['bridge_secret_property_missing', 'bridge_secret_property_missing'],
+    ['bridge_secret_property_empty', 'bridge_secret_property_empty'],
+    ['bridge_secret_property_read_failed', 'bridge_secret_property_read_failed'],
     ['unauthorized', 'bridge_auth_failed'],
     ['ai_os root folder is not configured', 'root_not_configured'],
     ['outside ai_os root', 'register_outside_root'],
@@ -70,9 +78,21 @@ function bridgeErrorCode_(error) {
 }
 
 function authenticate_(supplied) {
-  const expected = PropertiesService.getScriptProperties().getProperty('AI_OS_BRIDGE_SECRET');
-  if (!expected) throw new Error('Bridge secret is not configured');
-  if (!supplied || !constantTimeEqual_(String(supplied), String(expected))) throw new Error('Unauthorized');
+  const secretState = bridgeSecretState_();
+  if (secretState.code) throw new Error(secretState.code);
+  if (!supplied || !constantTimeEqual_(String(supplied), secretState.value)) throw new Error('Unauthorized');
+}
+
+function bridgeSecretState_() {
+  try {
+    const expected = PropertiesService.getScriptProperties().getProperty('AI_OS_BRIDGE_SECRET');
+    if (expected === null) return {code: 'bridge_secret_property_missing'};
+    if (String(expected).length === 0) return {code: 'bridge_secret_property_empty'};
+    return {code: null, value: String(expected)};
+  } catch (error) {
+    console.error(JSON.stringify({error: 'bridge_secret_property_read_failed'}));
+    return {code: 'bridge_secret_property_read_failed'};
+  }
 }
 
 function constantTimeEqual_(a, b) {
