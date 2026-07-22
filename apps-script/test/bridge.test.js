@@ -60,7 +60,14 @@ function loadBridge(options = {}) {
 
   const context = {
     console,
-    PropertiesService: { getScriptProperties: () => ({ getProperty: key => properties[key] || null }) },
+    PropertiesService: {
+      getScriptProperties: () => {
+        if (options.propertyReadError) throw new Error('property store unavailable');
+        return {
+          getProperty: key => Object.prototype.hasOwnProperty.call(properties, key) ? properties[key] : null,
+        };
+      },
+    },
     Utilities: {
       getUuid: () => 'fallback-id',
       DigestAlgorithm: { SHA_256: 'sha256' },
@@ -98,9 +105,29 @@ function post(context, body) {
 const tests = [];
 function test(name, fn) { tests.push([name, fn]); }
 
-test('fails closed when the bridge secret is not configured', () => {
+test('reports and fails closed when the bridge secret property is missing', () => {
   const { context } = loadBridge({ removeSecret: true });
-  assert.equal(post(context, { secret: 'anything', action: 'PING' }).code, 'bridge_secret_not_configured');
+  assert.equal(JSON.parse(context.doGet().content).secretStatus, 'bridge_secret_property_missing');
+  assert.equal(post(context, { secret: 'anything', action: 'PING' }).code, 'bridge_secret_property_missing');
+});
+
+test('reports and fails closed when the bridge secret property is empty', () => {
+  const { context } = loadBridge({ properties: { AI_OS_BRIDGE_SECRET: '' } });
+  assert.equal(JSON.parse(context.doGet().content).secretStatus, 'bridge_secret_property_empty');
+  assert.equal(post(context, { secret: 'anything', action: 'PING' }).code, 'bridge_secret_property_empty');
+});
+
+test('reports and fails closed when script properties cannot be read', () => {
+  const { context } = loadBridge({ propertyReadError: true });
+  assert.equal(JSON.parse(context.doGet().content).secretStatus, 'bridge_secret_property_read_failed');
+  assert.equal(post(context, { secret: 'anything', action: 'PING' }).code, 'bridge_secret_property_read_failed');
+});
+
+test('reports a configured secret without exposing its value', () => {
+  const { context } = loadBridge();
+  const health = JSON.parse(context.doGet().content);
+  assert.equal(health.secretStatus, 'configured');
+  assert.equal(JSON.stringify(health).includes('test-secret'), false);
 });
 
 test('rejects an incorrect secret', () => {
