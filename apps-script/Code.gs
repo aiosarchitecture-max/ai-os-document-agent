@@ -1,5 +1,5 @@
 /** AI_OS Google Workspace bridge v3.1. Configure secrets in Script Properties. */
-const BRIDGE_VERSION = '3.2.0';
+const BRIDGE_VERSION = '3.2.1';
 const ALLOWED_ACTIONS = Object.freeze([
   'PING', 'READ_DOC', 'READ_SHEET_ROWS', 'CREATE_DOC', 'APPEND_DOC', 'APPEND_SHEET_ROW',
   'RENAME_FILE', 'MOVE_FILE', 'TRASH_FILE'
@@ -92,11 +92,17 @@ function rootFolder_() {
 }
 
 function assertWithinRoot_(item) {
-  const rootId = rootFolder_().getId();
+  const root = rootFolder_();
+  const rootId = root.getId();
   if (item.getId() === rootId) return item;
   let queue = [];
+  const directParentIds = {};
   const initialParents = item.getParents();
-  while (initialParents.hasNext()) queue.push(initialParents.next());
+  while (initialParents.hasNext()) {
+    const parent = initialParents.next();
+    directParentIds[parent.getId()] = true;
+    queue.push(parent);
+  }
   const visited = {};
   let examined = 0;
   while (queue.length && examined < 200) {
@@ -107,6 +113,24 @@ function assertWithinRoot_(item) {
       visited[folderId] = true;
       const parents = folder.getParents();
       while (parents.hasNext()) queue.push(parents.next());
+    }
+    examined += 1;
+  }
+
+  // DriveApp can omit ancestors from getParents() in some execution contexts.
+  // Fall back to a bounded traversal from the configured root, accepting the
+  // item only when one of its direct parents is actually below that root.
+  queue = [root];
+  const seenBelowRoot = {};
+  examined = 0;
+  while (queue.length && examined < 1000) {
+    const folder = queue.shift();
+    const folderId = folder.getId();
+    if (directParentIds[folderId]) return item;
+    if (!seenBelowRoot[folderId]) {
+      seenBelowRoot[folderId] = true;
+      const children = folder.getFolders();
+      while (children.hasNext()) queue.push(children.next());
     }
     examined += 1;
   }

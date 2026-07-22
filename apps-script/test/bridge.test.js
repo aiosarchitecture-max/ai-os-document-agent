@@ -9,8 +9,14 @@ function iterator(items) {
   return { hasNext: () => index < items.length, next: () => items[index++] };
 }
 
-function makeFolder(id, parents = []) {
-  return { getId: () => id, getParents: () => iterator(parents) };
+function makeFolder(id, parents = [], children = []) {
+  return {
+    getId: () => id,
+    getParents: () => iterator(parents),
+    getFolders: () => iterator(children),
+    setParents: value => { parents = value; },
+    setChildren: value => { children = value; },
+  };
 }
 
 function makeFile(id, parents = []) {
@@ -31,6 +37,7 @@ function loadBridge(options = {}) {
   const root = makeFolder('root');
   const inside = makeFolder('inside', [root]);
   const outside = makeFolder('outside');
+  root.setChildren([inside]);
   const files = {
     insideFile: makeFile('insideFile', [inside]),
     outsideFile: makeFile('outsideFile', [outside]),
@@ -75,7 +82,7 @@ function loadBridge(options = {}) {
   };
   vm.createContext(context);
   vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'Code.gs'), 'utf8'), context);
-  return { context, files };
+  return { context, files, folders };
 }
 
 function post(context, body) {
@@ -118,6 +125,14 @@ test('rejects writes outside the configured AI_OS root', () => {
   const { context } = loadBridge();
   const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', requestId: 'r1', payload: { fileId: 'outsideFile', name: 'new' } });
   assert.match(result.error, /outside AI_OS root/);
+});
+
+test('accepts an in-root file when Drive omits its upward ancestor chain', () => {
+  const { context, files, folders } = loadBridge();
+  folders.inside.setParents([]);
+  const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', requestId: 'r-root-fallback', payload: { fileId: 'insideFile', name: 'new' } });
+  assert.equal(result.status, 'success');
+  assert.equal(files.insideFile.getName(), 'new');
 });
 
 test('executes an in-root write only once for the same requestId', () => {
