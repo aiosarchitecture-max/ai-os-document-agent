@@ -9,13 +9,15 @@ function iterator(items) {
   return { hasNext: () => index < items.length, next: () => items[index++] };
 }
 
-function makeFolder(id, parents = [], children = []) {
+function makeFolder(id, parents = [], children = [], files = []) {
   return {
     getId: () => id,
     getParents: () => iterator(parents),
     getFolders: () => iterator(children),
+    getFiles: () => iterator(files),
     setParents: value => { parents = value; },
     setChildren: value => { children = value; },
+    setFiles: value => { files = value; },
   };
 }
 
@@ -39,9 +41,13 @@ function loadBridge(options = {}) {
   const outside = makeFolder('outside');
   root.setChildren([inside]);
   const files = {
+    rootFile: makeFile('rootFile', [root]),
     insideFile: makeFile('insideFile', [inside]),
     outsideFile: makeFile('outsideFile', [outside]),
   };
+  root.setFiles([files.rootFile]);
+  inside.setFiles([files.insideFile]);
+  outside.setFiles([files.outsideFile]);
   const folders = { root, inside, outside };
   const cache = new Map();
   const properties = {
@@ -127,7 +133,15 @@ test('rejects writes outside the configured AI_OS root', () => {
   assert.match(result.error, /outside AI_OS root/);
 });
 
-test('accepts an in-root file when Drive omits its upward ancestor chain', () => {
+test('accepts a file directly in root when Drive omits all parents', () => {
+  const { context, files } = loadBridge();
+  files.rootFile.getParents = () => iterator([]);
+  const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', requestId: 'r-direct-root', payload: { fileId: 'rootFile', name: 'new-root' } });
+  assert.equal(result.status, 'success');
+  assert.equal(files.rootFile.getName(), 'new-root');
+});
+
+test('accepts a nested in-root file when Drive omits its upward ancestor chain', () => {
   const { context, files, folders } = loadBridge();
   folders.inside.setParents([]);
   const result = post(context, { secret: 'test-secret', action: 'RENAME_FILE', requestId: 'r-root-fallback', payload: { fileId: 'insideFile', name: 'new' } });
