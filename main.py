@@ -16,11 +16,11 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.15.0-cap023-canvas"
+VERSION = "v2.17.0-cap023c-tldraw-snapshot"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -36,6 +36,7 @@ GITHUB_REPO = os.getenv("GITHUB_REPO", "ai-os-document-agent").strip()
 GITHUB_API_BASE = "https://api.github.com"
 
 CANVAS_STATE_PATH = "data/canvas_state.json"
+CANVAS_SNAPSHOT_PATH = "data/canvas_snapshot.json"
 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
@@ -663,6 +664,25 @@ def canvas_save_state(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], 
         return {"status": "error", "human": result.get("human", "Uloženie plátna zlyhalo.")}
     return {"status": "success", "human": f"Plátno uložené ({len(nodes)} uzlov, {len(edges)} prepojení).", "state": state}
 
+def canvas_get_snapshot() -> Optional[Dict[str, Any]]:
+    # Plny tldraw snapshot (getSnapshot/loadSnapshot) - zachovava VSETKO,
+    # co Daniel v prehliadaci nakresli (sipky, skupiny, akykolvek typ tvaru),
+    # nie len geo obdlzniky. Pouziva ho vyhradne prehliadac, nie MCP nastroje.
+    raw = github_read_file(CANVAS_SNAPSHOT_PATH)
+    if raw is None:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None
+
+def canvas_save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
+    content = json.dumps(snapshot, ensure_ascii=False)
+    result = github_write_file(CANVAS_SNAPSHOT_PATH, content, "Canvas snapshot update (browser)")
+    if result.get("status") != "success":
+        return {"status": "error", "human": result.get("human", "Uloženie snapshotu zlyhalo.")}
+    return {"status": "success", "human": "Snapshot plátna uložený (plná vernosť: šípky, skupiny, všetky tvary)."}
+
 @app.post("/files/move")
 async def files_move(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -904,139 +924,213 @@ async def canvas_state_post(request: Request, token: Optional[str] = None):
     result = canvas_save_state(nodes, edges, updated_by)
     return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
 
+@app.get("/canvas/snapshot")
+def canvas_snapshot_get(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    snapshot = canvas_get_snapshot()
+    return JSONResponse(snapshot if snapshot is not None else {})
+
+@app.post("/canvas/snapshot")
+async def canvas_snapshot_post(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    if not isinstance(body, dict) or not body:
+        return plain_or_json({"status": "error", "human": "Chýba telo snapshotu.", "version": VERSION}, debug)
+    result = canvas_save_snapshot(body)
+    return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
+
 @app.get("/canvas")
 def canvas_page(token: Optional[str] = None):
     token_value = token or ""
     html = f"""<!doctype html><html lang="sk"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AI_OS — Živé plátno</title>
+<title>AI_OS — Živé plátno (tldraw)</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tldraw/tldraw.css"/>
 <style>
-html,body{{margin:0;height:100%;background:#f3f4f6;font-family:-apple-system,Arial,sans-serif;color:#111827;overflow:hidden}}
-#toolbar{{position:fixed;top:0;left:0;right:0;height:52px;background:white;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:10}}
-#toolbar h1{{font-size:15px;margin:0;font-weight:700}}
-#toolbar button{{background:#111827;color:white;border:0;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}}
+html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
+#toolbar{{position:fixed;top:0;left:0;right:0;height:48px;background:white;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:1000}}
+#toolbar h1{{font-size:14px;margin:0;font-weight:700;color:#111827}}
+#toolbar button{{background:#111827;color:white;border:0;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}}
 #toolbar .status{{font-size:12px;color:#6b7280}}
-#board{{position:absolute;top:52px;left:0;right:0;bottom:0;overflow:auto;background:#fafafa}}
-.node{{position:absolute;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:move;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;font-size:13px;font-weight:600;user-select:none}}
-.node.green{{background:#dcfce7;color:#166534;border:1.5px solid #86efac}}
-.node.amber{{background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d}}
-.node.gray{{background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db}}
-.node.blue{{background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd}}
-svg#edges{{position:absolute;top:0;left:0;pointer-events:none}}
-</style></head>
+#root{{position:fixed;top:48px;left:0;right:0;bottom:0}}
+</style>
+<script type="importmap">
+{{
+  "imports": {{
+    "react": "https://esm.sh/react@19.2.0",
+    "react-dom": "https://esm.sh/react-dom@19.2.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.2.0/client",
+    "tldraw": "https://esm.sh/tldraw@5?target=es2022&deps=react@19.2.0,react-dom@19.2.0"
+  }}
+}}
+</script>
+</head>
 <body>
 <div id="toolbar">
-  <h1>AI_OS — Živé plátno</h1>
-  <button onclick="addNode()">+ Nový uzol</button>
-  <button onclick="saveState('human')">Uložiť</button>
+  <h1>AI_OS — Živé plátno (tldraw)</h1>
+  <button onclick="window.aiosAddNode && window.aiosAddNode()">+ Nový uzol</button>
+  <button onclick="window.aiosSave && window.aiosSave()">Uložiť do GitHubu</button>
   <span id="statusText" class="status"></span>
 </div>
-<div id="board">
-  <svg id="edges" width="2000" height="1200"></svg>
-</div>
-<script>
-const tokenFromServer = {json.dumps(token_value)};
-function getToken(){{const p=new URLSearchParams(window.location.search);return p.get('token')||tokenFromServer||'';}}
-let state = {{nodes: [], edges: []}};
-let dragging = null, dragOffsetX = 0, dragOffsetY = 0;
-
-async function loadState() {{
-  const r = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
-  state = await r.json();
-  render();
-}}
-
-function render() {{
-  const board = document.getElementById('board');
-  board.querySelectorAll('.node').forEach(n => n.remove());
-  for (const node of state.nodes) {{
-    const el = document.createElement('div');
-    el.className = 'node ' + (node.color || 'gray');
-    el.style.left = node.x + 'px';
-    el.style.top = node.y + 'px';
-    el.style.width = node.w + 'px';
-    el.style.height = node.h + 'px';
-    el.textContent = node.text;
-    el.dataset.id = node.id;
-    el.addEventListener('mousedown', startDrag);
-    el.addEventListener('dblclick', () => renameNode(node.id));
-    board.appendChild(el);
-  }}
-  drawEdges();
-}}
-
-function drawEdges() {{
-  const svg = document.getElementById('edges');
-  svg.innerHTML = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#9ca3af" stroke-width="1.5"/></marker></defs>';
-  for (const edge of state.edges) {{
-    const a = state.nodes.find(n => n.id === edge.from);
-    const b = state.nodes.find(n => n.id === edge.to);
-    if (!a || !b) continue;
-    const x1 = a.x + a.w/2, y1 = a.y + a.h;
-    const x2 = b.x + b.w/2, y2 = b.y;
-    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
-    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
-    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
-    line.setAttribute('stroke', '#9ca3af'); line.setAttribute('stroke-width', '1.5');
-    line.setAttribute('marker-end', 'url(#arrow)');
-    svg.appendChild(line);
-  }}
-}}
-
-function startDrag(e) {{
-  dragging = e.currentTarget.dataset.id;
-  const node = state.nodes.find(n => n.id === dragging);
-  dragOffsetX = e.clientX - node.x;
-  dragOffsetY = e.clientY - node.y;
-  document.addEventListener('mousemove', onDrag);
-  document.addEventListener('mouseup', stopDrag);
-}}
-function onDrag(e) {{
-  const node = state.nodes.find(n => n.id === dragging);
-  if (!node) return;
-  node.x = Math.max(0, e.clientX - dragOffsetX);
-  node.y = Math.max(0, e.clientY - dragOffsetY);
-  render();
-}}
-function stopDrag() {{
-  dragging = null;
-  document.removeEventListener('mousemove', onDrag);
-  document.removeEventListener('mouseup', stopDrag);
-}}
-
-function renameNode(id) {{
-  const node = state.nodes.find(n => n.id === id);
-  const next = prompt('Text uzla:', node.text);
-  if (next !== null) {{ node.text = next; render(); }}
-}}
-
-function addNode() {{
-  const text = prompt('Text nového uzla:', 'Nový uzol');
-  if (!text) return;
-  const id = 'N' + Date.now();
-  state.nodes.push({{id: id, x: 60, y: 320, w: 150, h: 60, text: text, color: 'blue'}});
-  render();
-}}
-
-async function saveState(who) {{
-  document.getElementById('statusText').textContent = 'Ukladám...';
-  try {{
-    const r = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {{
-      method: 'POST',
-      headers: {{'Content-Type':'application/json'}},
-      body: JSON.stringify({{nodes: state.nodes, edges: state.edges, updated_by: who}})
-    }});
-    const data = await r.json();
-    document.getElementById('statusText').textContent = data.status === 'success' ? '✅ Uložené' : '❌ ' + (data.human || 'Chyba');
-  }} catch(e) {{
-    document.getElementById('statusText').textContent = '❌ ' + e;
-  }}
-}}
-
-loadState();
-</script>
+<div id="root"></div>
+<script>window.__AIOS_TOKEN__ = {json.dumps(token_value)};</script>
+<script type="module" src="/canvas/app.js"></script>
 </body></html>"""
     return HTMLResponse(html)
+
+@app.get("/canvas/app.js")
+def canvas_app_js():
+    js = """
+import React from 'react';
+import { createRoot } from 'react-dom/client';
+import { Tldraw, createShapeId, toRichText, renderPlaintextFromRichText, getSnapshot, loadSnapshot } from 'tldraw';
+
+function getToken() {
+  const p = new URLSearchParams(window.location.search);
+  return p.get('token') || window.__AIOS_TOKEN__ || '';
+}
+
+const COLOR_MAP = { green: 'green', amber: 'orange', gray: 'grey', blue: 'blue' };
+const REVERSE_COLOR_MAP = { green: 'green', orange: 'amber', grey: 'gray', blue: 'blue' };
+let editorRef = null;
+
+function setStatus(text) {
+  const el = document.getElementById('statusText');
+  if (el) el.textContent = text;
+}
+
+async function loadCanvas(editor) {
+  // KROK 1 - plná vernosť: obnov presne to, čo bolo v prehliadači naposledy
+  // uložené (šípky, skupiny, akékoľvek tvary), cez oficiálne tldraw
+  // getSnapshot/loadSnapshot API (nie vlastný parser).
+  try {
+    const snapRes = await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true');
+    const snapshot = await snapRes.json();
+    if (snapshot && snapshot.document) {
+      loadSnapshot(editor.store, snapshot);
+    }
+  } catch (e) {
+    console.warn('AI_OS canvas: no snapshot yet or failed to load, falling back to simple list', e);
+  }
+
+  // KROK 2 - zlúč návrhy od Claude: jednoduchý zoznam uzlov (nodesJson),
+  // ktoré Claude pridal/upravil cez MCP nástroj. Vytvor alebo aktualizuj len
+  // tie, ktoré ešte na plátne nie sú s rovnakým obsahom (podľa id).
+  try {
+    const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
+    const state = await res.json();
+    for (const n of state.nodes || []) {
+      const id = createShapeId(n.id);
+      const existing = editor.getShape(id);
+      const props = {
+        geo: 'rectangle',
+        w: n.w,
+        h: n.h,
+        color: COLOR_MAP[n.color] || 'grey',
+        richText: toRichText(n.text || ''),
+      };
+      if (existing) {
+        editor.updateShape({ id, type: 'geo', x: n.x, y: n.y, props });
+      } else {
+        editor.createShape({ id, type: 'geo', x: n.x, y: n.y, props });
+      }
+    }
+  } catch (e) {
+    console.error('AI_OS canvas: merging simple node list failed', e);
+    setStatus('❌ Nepodarilo sa načítať plátno: ' + e);
+  }
+  editor.zoomToFit();
+}
+
+async function saveCanvas() {
+  const editor = editorRef;
+  if (!editor) return;
+  setStatus('Ukladám do GitHubu...');
+
+  // A) Plný tldraw snapshot - zachová VŠETKO (šípky, skupiny, čokoľvek Daniel
+  // nakreslil), cez oficiálne getSnapshot(editor.store).
+  try {
+    const snapshot = getSnapshot(editor.store);
+    await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(snapshot),
+    });
+  } catch (e) {
+    console.error('AI_OS canvas: snapshot save failed', e);
+    setStatus('❌ Snapshot zlyhal: ' + e);
+    return;
+  }
+
+  // B) Zjednodušený zoznam (len geo obdĺžniky, text vždy čítaný NAŽIVO cez
+  // renderPlaintextFromRichText - nie z cache) - pre mňa (Claude) cez MCP.
+  const shapes = editor.getCurrentPageShapes().filter((s) => s.type === 'geo');
+  const nodes = shapes.map((s) => {
+    let text = '';
+    try {
+      text = renderPlaintextFromRichText(editor, s.props.richText) || '';
+    } catch (e) {
+      console.warn('AI_OS canvas: could not read richText for shape', s.id, e);
+    }
+    return {
+      id: s.id,
+      x: Math.round(s.x),
+      y: Math.round(s.y),
+      w: s.props.w,
+      h: s.props.h,
+      text,
+      color: REVERSE_COLOR_MAP[s.props.color] || 'gray',
+    };
+  });
+  try {
+    const resp = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ nodes, edges: [], updated_by: 'human' }),
+    });
+    const data = await resp.json();
+    setStatus(data.status === 'success' ? '✅ Uložené do GitHubu' : '❌ ' + (data.human || 'Chyba'));
+  } catch (e) {
+    setStatus('❌ ' + e);
+  }
+}
+
+function addNode() {
+  const editor = editorRef;
+  if (!editor) return;
+  const text = prompt('Text nového uzla:', 'Nový uzol');
+  if (!text) return;
+  editor.createShape({
+    id: createShapeId(),
+    type: 'geo',
+    x: 100,
+    y: 400,
+    props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
+  });
+}
+
+window.aiosSave = saveCanvas;
+window.aiosAddNode = addNode;
+
+function App() {
+  const handleMount = (editor) => {
+    editorRef = editor;
+    loadCanvas(editor);
+  };
+  return React.createElement(Tldraw, { onMount: handleMount });
+}
+
+const root = createRoot(document.getElementById('root'));
+root.render(React.createElement(App));
+"""
+    return Response(content=js, media_type="application/javascript; charset=utf-8")
 
 @app.post("/github/write-file")
 async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
