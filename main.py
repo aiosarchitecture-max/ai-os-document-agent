@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.14.0-cap020-task-form"
+VERSION = "v2.15.0-cap023-canvas"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -34,6 +34,8 @@ GITHUB_PAT = os.getenv("GITHUB_PAT", "").strip()
 GITHUB_OWNER = os.getenv("GITHUB_OWNER", "aiosarchitecture-max").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "ai-os-document-agent").strip()
 GITHUB_API_BASE = "https://api.github.com"
+
+CANVAS_STATE_PATH = "data/canvas_state.json"
 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
@@ -85,10 +87,10 @@ app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
     "version": VERSION,
-    "stage": "CAP-020 Task Creation Form",
-    "last_stable_cap": "CAP-019",
-    "current_cap": "CAP-020",
-    "current_task": "Mobilny formular a API endpoint na jednoduche vytvorenie ulohy.",
+    "stage": "CAP-023 Zive vizualizacne platno",
+    "last_stable_cap": "CAP-020",
+    "current_cap": "CAP-023",
+    "current_task": "Zdielane platno (org board, idealna scena) - Claude aj Daniel ho vedia upravovat.",
     "root_folder_id_configured": bool(AI_OS_ROOT_FOLDER_ID),
     "apps_script_configured": bool(APPS_SCRIPT_WEBAPP_URL),
     "github_repo_url": GITHUB_REPO_URL,
@@ -112,6 +114,8 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
     {"name": "aios_research_log", "description": "Prečíta AI_OS_RESEARCH_LOG.", "method": "GET", "path": "/research/log?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_process_pending_tasks", "description": "CAP-019 — Spracuje čakajúce úlohy z AI_OS_TASKS.", "method": "GET", "path": "/tasks/process-pending?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
     {"name": "aios_create_task", "description": "CAP-020 — Vytvorí novú úlohu v AI_OS_TASKS (spracuje ju Cron Worker do ~10 min). Aj mobilný formulár na /tasks/new.", "method": "POST", "path": "/tasks/create?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
+    {"name": "aios_canvas_get", "description": "CAP-023 — Načíta aktuálny stav živého plátna (uzly/hrany).", "method": "GET", "path": "/canvas/state?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
+    {"name": "aios_canvas_save", "description": "CAP-023 — Uloží kompletný stav živého plátna (uzly/hrany).", "method": "POST", "path": "/canvas/state?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
 ]
 
 def utc_now() -> str:
@@ -162,7 +166,7 @@ def command_to_action(message: str) -> Dict[str, Any]:
     if low in {"denné príkazy", "denne prikazy", "príkazy", "prikazy"}:
         return {"intent": "COMMANDS", "human": available_commands_text()}
     if "manažérsky prehľad" in low or "manazersky prehlad" in low:
-        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\nStav: CAP-020.\nPriorita: jednoduchšie zadávanie úloh."}
+        return {"intent": "EXECUTIVE_REPORT", "human": "AI_OS – manažérsky prehľad\nStav: CAP-023.\nPriorita: živé vizualizačné plátno."}
     doc_commands = {
         "audit dokumentácie": "DOC_AUDIT", "audit dokumentacie": "DOC_AUDIT",
         "inventúra dokumentov": "DOC_INVENTORY", "inventura dokumentov": "DOC_INVENTORY",
@@ -247,6 +251,9 @@ Project Automation:
 - Projekt audit [názov]
 - Projekt milestone [názov]: [poznámka]
 
+Živé plátno:
+- Otvor plátno: /canvas?token=API_TOKEN
+
 Bezpečnosť:
 - Produkčné zmeny a reorganizácie iba cez potvrdenie / CONFIRM ID.
 - AnythingLLM nesmie samo nasadzovať na Render.
@@ -312,6 +319,23 @@ def github_get_file_sha(path: str) -> Optional[str]:
     if resp.status_code == 200:
         return resp.json().get("sha")
     return None
+
+def github_read_file(path: str) -> Optional[str]:
+    if not GITHUB_PAT:
+        return None
+    url = f"{GITHUB_API_BASE}/repos/{GITHUB_OWNER}/{GITHUB_REPO}/contents/{path}"
+    try:
+        resp = requests.get(url, headers=_github_headers(), timeout=30.0)
+    except Exception:
+        return None
+    if resp.status_code != 200:
+        return None
+    data = resp.json()
+    content_b64 = data.get("content", "")
+    try:
+        return base64.b64decode(content_b64).decode("utf-8")
+    except Exception:
+        return None
 
 def github_write_file(path: str, content: str, commit_message: str) -> Dict[str, Any]:
     if not GITHUB_PAT:
@@ -604,6 +628,41 @@ def apps_script_result_to_response(result: Dict[str, Any], debug: bool) -> Any:
     payload = {"status": result.get("status", "error"), "version": VERSION, "time_utc": utc_now(), "apps_script": result, "human": human}
     return plain_or_json(payload, debug)
 
+def _default_canvas_state() -> Dict[str, Any]:
+    return {
+        "nodes": [
+            {"id": "D1", "x": 40, "y": 60, "w": 150, "h": 60, "text": "D1 Komunikácia", "color": "green"},
+            {"id": "D4", "x": 220, "y": 60, "w": 150, "h": 60, "text": "D4 Produkcia", "color": "green"},
+            {"id": "D5", "x": 400, "y": 60, "w": 150, "h": 60, "text": "D5 Kvalita", "color": "green"},
+            {"id": "D7", "x": 580, "y": 60, "w": 150, "h": 60, "text": "D7 Riadenie", "color": "green"},
+            {"id": "D2", "x": 130, "y": 180, "w": 150, "h": 60, "text": "D2 Šírenie", "color": "amber"},
+            {"id": "D3", "x": 310, "y": 180, "w": 150, "h": 60, "text": "D3 Financie", "color": "amber"},
+            {"id": "D6", "x": 490, "y": 180, "w": 150, "h": 60, "text": "D6 Verejnosť", "color": "amber"},
+        ],
+        "edges": [
+            {"from": "D1", "to": "D2"}, {"from": "D4", "to": "D3"}, {"from": "D5", "to": "D6"},
+        ],
+        "updated_at": None,
+        "updated_by": None,
+    }
+
+def canvas_get_state() -> Dict[str, Any]:
+    raw = github_read_file(CANVAS_STATE_PATH)
+    if raw is None:
+        return _default_canvas_state()
+    try:
+        return json.loads(raw)
+    except Exception:
+        return _default_canvas_state()
+
+def canvas_save_state(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], updated_by: str) -> Dict[str, Any]:
+    state = {"nodes": nodes, "edges": edges, "updated_at": utc_now(), "updated_by": updated_by}
+    content = json.dumps(state, ensure_ascii=False, indent=2)
+    result = github_write_file(CANVAS_STATE_PATH, content, f"Canvas update by {updated_by}")
+    if result.get("status") != "success":
+        return {"status": "error", "human": result.get("human", "Uloženie plátna zlyhalo.")}
+    return {"status": "success", "human": f"Plátno uložené ({len(nodes)} uzlov, {len(edges)} prepojení).", "state": state}
+
 @app.post("/files/move")
 async def files_move(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -820,6 +879,165 @@ async function submitTask() {{
 </body></html>"""
     return HTMLResponse(html)
 
+@app.get("/canvas/state")
+def canvas_state_get(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    state = canvas_get_state()
+    return JSONResponse(state)
+
+@app.post("/canvas/state")
+async def canvas_state_post(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    nodes = body.get("nodes")
+    edges = body.get("edges")
+    updated_by = str(body.get("updated_by") or "human").strip()
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return plain_or_json({"status": "error", "human": "Chýbajú nodes alebo edges (musia byť zoznamy).", "version": VERSION}, debug)
+    result = canvas_save_state(nodes, edges, updated_by)
+    return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
+
+@app.get("/canvas")
+def canvas_page(token: Optional[str] = None):
+    token_value = token or ""
+    html = f"""<!doctype html><html lang="sk"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AI_OS — Živé plátno</title>
+<style>
+html,body{{margin:0;height:100%;background:#f3f4f6;font-family:-apple-system,Arial,sans-serif;color:#111827;overflow:hidden}}
+#toolbar{{position:fixed;top:0;left:0;right:0;height:52px;background:white;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:10}}
+#toolbar h1{{font-size:15px;margin:0;font-weight:700}}
+#toolbar button{{background:#111827;color:white;border:0;border-radius:8px;padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer}}
+#toolbar .status{{font-size:12px;color:#6b7280}}
+#board{{position:absolute;top:52px;left:0;right:0;bottom:0;overflow:auto;background:#fafafa}}
+.node{{position:absolute;border-radius:10px;box-shadow:0 1px 3px rgba(0,0,0,.12);cursor:move;display:flex;align-items:center;justify-content:center;text-align:center;padding:6px;font-size:13px;font-weight:600;user-select:none}}
+.node.green{{background:#dcfce7;color:#166534;border:1.5px solid #86efac}}
+.node.amber{{background:#fef3c7;color:#92400e;border:1.5px solid #fcd34d}}
+.node.gray{{background:#f3f4f6;color:#374151;border:1.5px solid #d1d5db}}
+.node.blue{{background:#dbeafe;color:#1e40af;border:1.5px solid #93c5fd}}
+svg#edges{{position:absolute;top:0;left:0;pointer-events:none}}
+</style></head>
+<body>
+<div id="toolbar">
+  <h1>AI_OS — Živé plátno</h1>
+  <button onclick="addNode()">+ Nový uzol</button>
+  <button onclick="saveState('human')">Uložiť</button>
+  <span id="statusText" class="status"></span>
+</div>
+<div id="board">
+  <svg id="edges" width="2000" height="1200"></svg>
+</div>
+<script>
+const tokenFromServer = {json.dumps(token_value)};
+function getToken(){{const p=new URLSearchParams(window.location.search);return p.get('token')||tokenFromServer||'';}}
+let state = {{nodes: [], edges: []}};
+let dragging = null, dragOffsetX = 0, dragOffsetY = 0;
+
+async function loadState() {{
+  const r = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
+  state = await r.json();
+  render();
+}}
+
+function render() {{
+  const board = document.getElementById('board');
+  board.querySelectorAll('.node').forEach(n => n.remove());
+  for (const node of state.nodes) {{
+    const el = document.createElement('div');
+    el.className = 'node ' + (node.color || 'gray');
+    el.style.left = node.x + 'px';
+    el.style.top = node.y + 'px';
+    el.style.width = node.w + 'px';
+    el.style.height = node.h + 'px';
+    el.textContent = node.text;
+    el.dataset.id = node.id;
+    el.addEventListener('mousedown', startDrag);
+    el.addEventListener('dblclick', () => renameNode(node.id));
+    board.appendChild(el);
+  }}
+  drawEdges();
+}}
+
+function drawEdges() {{
+  const svg = document.getElementById('edges');
+  svg.innerHTML = '<defs><marker id="arrow" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M2 1L8 5L2 9" fill="none" stroke="#9ca3af" stroke-width="1.5"/></marker></defs>';
+  for (const edge of state.edges) {{
+    const a = state.nodes.find(n => n.id === edge.from);
+    const b = state.nodes.find(n => n.id === edge.to);
+    if (!a || !b) continue;
+    const x1 = a.x + a.w/2, y1 = a.y + a.h;
+    const x2 = b.x + b.w/2, y2 = b.y;
+    const line = document.createElementNS('http://www.w3.org/2000/svg','line');
+    line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+    line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+    line.setAttribute('stroke', '#9ca3af'); line.setAttribute('stroke-width', '1.5');
+    line.setAttribute('marker-end', 'url(#arrow)');
+    svg.appendChild(line);
+  }}
+}}
+
+function startDrag(e) {{
+  dragging = e.currentTarget.dataset.id;
+  const node = state.nodes.find(n => n.id === dragging);
+  dragOffsetX = e.clientX - node.x;
+  dragOffsetY = e.clientY - node.y;
+  document.addEventListener('mousemove', onDrag);
+  document.addEventListener('mouseup', stopDrag);
+}}
+function onDrag(e) {{
+  const node = state.nodes.find(n => n.id === dragging);
+  if (!node) return;
+  node.x = Math.max(0, e.clientX - dragOffsetX);
+  node.y = Math.max(0, e.clientY - dragOffsetY);
+  render();
+}}
+function stopDrag() {{
+  dragging = null;
+  document.removeEventListener('mousemove', onDrag);
+  document.removeEventListener('mouseup', stopDrag);
+}}
+
+function renameNode(id) {{
+  const node = state.nodes.find(n => n.id === id);
+  const next = prompt('Text uzla:', node.text);
+  if (next !== null) {{ node.text = next; render(); }}
+}}
+
+function addNode() {{
+  const text = prompt('Text nového uzla:', 'Nový uzol');
+  if (!text) return;
+  const id = 'N' + Date.now();
+  state.nodes.push({{id: id, x: 60, y: 320, w: 150, h: 60, text: text, color: 'blue'}});
+  render();
+}}
+
+async function saveState(who) {{
+  document.getElementById('statusText').textContent = 'Ukladám...';
+  try {{
+    const r = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {{
+      method: 'POST',
+      headers: {{'Content-Type':'application/json'}},
+      body: JSON.stringify({{nodes: state.nodes, edges: state.edges, updated_by: who}})
+    }});
+    const data = await r.json();
+    document.getElementById('statusText').textContent = data.status === 'success' ? '✅ Uložené' : '❌ ' + (data.human || 'Chyba');
+  }} catch(e) {{
+    document.getElementById('statusText').textContent = '❌ ' + e;
+  }}
+}}
+
+loadState();
+</script>
+</body></html>"""
+    return HTMLResponse(html)
+
 @app.post("/github/write-file")
 async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -920,6 +1138,23 @@ def aios_github_write_file(path: str, content: str, commit_message: str = "") ->
 async def aios_review_document(file_id: str, folder_context: str = "") -> dict:
     """Reviewer + Information Architect Agent (CAP-016)."""
     return await review_document(file_id, folder_context)
+
+@mcp.tool()
+def aios_canvas_get() -> dict:
+    """CAP-023 — Načíta aktuálny stav živého plátna (uzly a hrany)."""
+    return canvas_get_state()
+
+@mcp.tool()
+def aios_canvas_save(nodes_json: str, edges_json: str) -> dict:
+    """CAP-023 — Uloží kompletný stav živého plátna. nodes_json/edges_json su JSON zoznamy (nie čiastočné patche)."""
+    try:
+        nodes = json.loads(nodes_json)
+        edges = json.loads(edges_json)
+    except Exception as exc:
+        return {"status": "error", "message": f"Neplatný JSON: {exc}"}
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        return {"status": "error", "message": "nodes_json a edges_json musia byť JSON zoznamy."}
+    return canvas_save_state(nodes, edges, "claude")
 
 app.mount("/mcp", mcp.streamable_http_app())
 
