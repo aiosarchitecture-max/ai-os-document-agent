@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.17.2-cap023e-visible-diagnostics"
+VERSION = "v2.17.3-cap023f-silent-crash-canary"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1026,6 +1026,7 @@ def canvas_app_js():
 function diagLog(text, isError) {
   const diag = document.getElementById('diag');
   if (!diag) return;
+  if (diag.style.display === 'none') diag.style.display = 'block';
   const span = document.createElement('div');
   span.className = isError ? 'fail' : 'ok';
   span.textContent = text;
@@ -1227,9 +1228,30 @@ async function boot() {
   }
 
   const diagEl = document.getElementById('diag');
-  if (diagEl) diagEl.remove();
+  if (diagEl) {
+    diagEl.style.display = 'none';
+    diagEl.dataset.hiddenAfterBoot = 'true';
+  }
   const root = createRoot(document.getElementById('root'));
   root.render(React.createElement(App));
+
+  // Tichý pád bez JS chyby (napr. niečo mimo Reactu vyprázdni #root) -
+  // pravidelne kontroluj, či plátno stále existuje, a ak nie, ukáž to.
+  setInterval(() => {
+    const rootEl = document.getElementById('root');
+    const looksEmpty = !rootEl || rootEl.children.length === 0 || rootEl.innerHTML.trim() === '';
+    if (looksEmpty) {
+      const d = document.getElementById('diag');
+      if (d && d.dataset.wipedReported !== 'true') {
+        d.dataset.wipedReported = 'true';
+        d.style.display = 'block';
+        const span = document.createElement('div');
+        span.className = 'fail';
+        span.textContent = '⚠️ Plátno potichu zmizlo (bez JS chyby) o ' + new Date().toLocaleTimeString() + '. Skopíruj toto Claudovi.';
+        d.appendChild(span);
+      }
+    }
+  }, 2000);
 }
 
 window.addEventListener('error', (e) => {
