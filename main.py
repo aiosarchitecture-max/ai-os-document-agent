@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.17.0-cap023c-tldraw-snapshot"
+VERSION = "v2.17.1-cap023d-error-boundary"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1103,28 +1103,76 @@ async function saveCanvas() {
 }
 
 function addNode() {
-  const editor = editorRef;
-  if (!editor) return;
-  const text = prompt('Text nového uzla:', 'Nový uzol');
-  if (!text) return;
-  editor.createShape({
-    id: createShapeId(),
-    type: 'geo',
-    x: 100,
-    y: 400,
-    props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
-  });
+  try {
+    const editor = editorRef;
+    if (!editor) {
+      setStatus('❌ Editor ešte nie je pripravený, skús o chvíľu.');
+      return;
+    }
+    const text = prompt('Text nového uzla:', 'Nový uzol');
+    if (!text) return;
+    editor.createShape({
+      id: createShapeId(),
+      type: 'geo',
+      x: 100,
+      y: 400,
+      props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
+    });
+  } catch (e) {
+    console.error('AI_OS canvas: addNode failed', e);
+    setStatus('❌ Nový uzol zlyhal: ' + (e && e.message ? e.message : e));
+  }
 }
 
 window.aiosSave = saveCanvas;
 window.aiosAddNode = addNode;
+
+// Globalny zachytavac chyb - ak nieco padne mimo React (napr. pri nacitani
+// modulu alebo v udalosti), zobraz to viditelne namiesto tichej bielej
+// obrazovky. Bez tohto by bolo nemozne diagnostikovat z konzoly na dialku.
+window.addEventListener('error', (e) => {
+  console.error('AI_OS canvas: global error', e.error || e.message);
+  setStatus('❌ Chyba skriptu: ' + (e.error && e.error.message ? e.error.message : e.message));
+});
+window.addEventListener('unhandledrejection', (e) => {
+  console.error('AI_OS canvas: unhandled promise rejection', e.reason);
+  setStatus('❌ Chyba (promise): ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+});
+
+class CanvasErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { error };
+  }
+  componentDidCatch(error, info) {
+    console.error('AI_OS canvas: React error boundary caught', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return React.createElement(
+        'div',
+        { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
+        '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
+          (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
+      );
+    }
+    return this.props.children;
+  }
+}
 
 function App() {
   const handleMount = (editor) => {
     editorRef = editor;
     loadCanvas(editor);
   };
-  return React.createElement(Tldraw, { onMount: handleMount });
+  return React.createElement(
+    CanvasErrorBoundary,
+    null,
+    React.createElement(Tldraw, { onMount: handleMount })
+  );
 }
 
 const root = createRoot(document.getElementById('root'));
