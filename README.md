@@ -19,6 +19,10 @@ AI_OS v3 provides a backward-compatible foundation for evolving the document-dri
 - Google Sheets is an optional read-only human projection. Task writes stay in PostgreSQL.
 - Register reconciliation is read-only and requires the API bearer token.
 
+## Operating directives
+
+- [Research-first problem solving](docs/directives/RESEARCH_FIRST.md) — mandatory sequence for diagnosing and resolving problems in AI_OS.
+
 ## Local validation
 
 ```bash
