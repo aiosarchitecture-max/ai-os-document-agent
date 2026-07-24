@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.17.1-cap023d-error-boundary"
+VERSION = "v2.17.2-cap023e-visible-diagnostics"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -960,6 +960,9 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
 #toolbar button{{background:#111827;color:white;border:0;border-radius:8px;padding:7px 12px;font-size:13px;font-weight:600;cursor:pointer}}
 #toolbar .status{{font-size:12px;color:#6b7280}}
 #root{{position:fixed;top:48px;left:0;right:0;bottom:0}}
+#diag{{position:fixed;top:48px;left:0;right:0;bottom:0;padding:20px;font-family:monospace;font-size:14px;white-space:pre-wrap;background:white;overflow:auto;z-index:1}}
+#diag .ok{{color:#166534}}
+#diag .fail{{color:#991b1b;font-weight:700}}
 </style>
 <script type="importmap">
 {{
@@ -979,8 +982,40 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
   <button onclick="window.aiosSave && window.aiosSave()">Uložiť do GitHubu</button>
   <span id="statusText" class="status"></span>
 </div>
+<div id="diag">Kontrolujem pripojenie... (toto zmizne, ak je všetko v poriadku)\n</div>
 <div id="root"></div>
 <script>window.__AIOS_TOKEN__ = {json.dumps(token_value)};</script>
+<script>
+(function() {{
+  var diag = document.getElementById('diag');
+  function line(text, cls) {{
+    var span = document.createElement('div');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    diag.appendChild(span);
+  }}
+  var urls = [
+    ['tldraw.css', 'https://cdn.jsdelivr.net/npm/tldraw/tldraw.css'],
+    ['react (esm.sh)', 'https://esm.sh/react@19.2.0'],
+    ['react-dom/client (esm.sh)', 'https://esm.sh/react-dom@19.2.0/client'],
+    ['tldraw JS (esm.sh)', 'https://esm.sh/tldraw@5?target=es2022&deps=react@19.2.0,react-dom@19.2.0']
+  ];
+  diag.textContent = '';
+  line('Kontrolujem, či sa dajú stiahnuť potrebné súbory z internetu:');
+  urls.forEach(function(pair) {{
+    fetch(pair[1], {{ method: 'GET', mode: 'cors' }})
+      .then(function(r) {{ line((r.ok ? '✅ OK ' : '❌ CHYBA (' + r.status + ') ') + pair[0], r.ok ? 'ok' : 'fail'); }})
+      .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) ' + pair[0] + ' — ' + e.message, 'fail'); }});
+  }});
+  window.__AIOS_APP_BOOTED__ = false;
+  setTimeout(function() {{
+    if (!window.__AIOS_APP_BOOTED__) {{
+      line('');
+      line('⚠️ Aplikácia (app.js) sa nespustila do 8 sekúnd. Skopíruj CELÝ tento text a pošli ho Claudovi.', 'fail');
+    }}
+  }}, 8000);
+}})();
+</script>
 <script type="module" src="/canvas/app.js"></script>
 </body></html>"""
     return HTMLResponse(html)
@@ -988,195 +1023,223 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
 @app.get("/canvas/app.js")
 def canvas_app_js():
     js = """
-import React from 'react';
-import { createRoot } from 'react-dom/client';
-import { Tldraw, createShapeId, toRichText, renderPlaintextFromRichText, getSnapshot, loadSnapshot } from 'tldraw';
-
-function getToken() {
-  const p = new URLSearchParams(window.location.search);
-  return p.get('token') || window.__AIOS_TOKEN__ || '';
+function diagLog(text, isError) {
+  const diag = document.getElementById('diag');
+  if (!diag) return;
+  const span = document.createElement('div');
+  span.className = isError ? 'fail' : 'ok';
+  span.textContent = text;
+  diag.appendChild(span);
 }
 
-const COLOR_MAP = { green: 'green', amber: 'orange', gray: 'grey', blue: 'blue' };
-const REVERSE_COLOR_MAP = { green: 'green', orange: 'amber', grey: 'gray', blue: 'blue' };
-let editorRef = null;
-
-function setStatus(text) {
-  const el = document.getElementById('statusText');
-  if (el) el.textContent = text;
-}
-
-async function loadCanvas(editor) {
-  // KROK 1 - plná vernosť: obnov presne to, čo bolo v prehliadači naposledy
-  // uložené (šípky, skupiny, akékoľvek tvary), cez oficiálne tldraw
-  // getSnapshot/loadSnapshot API (nie vlastný parser).
+async function boot() {
+  window.__AIOS_APP_BOOTED__ = true;
+  diagLog('');
+  diagLog('Načítavam React a tldraw (toto môže chvíľu trvať)...');
+  let React, createRoot, Tldraw, createShapeId, toRichText, renderPlaintextFromRichText, getSnapshot, loadSnapshot;
   try {
-    const snapRes = await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true');
-    const snapshot = await snapRes.json();
-    if (snapshot && snapshot.document) {
-      loadSnapshot(editor.store, snapshot);
-    }
+    const reactModule = await import('react');
+    React = reactModule.default || reactModule;
+    diagLog('✅ React načítaný');
   } catch (e) {
-    console.warn('AI_OS canvas: no snapshot yet or failed to load, falling back to simple list', e);
-  }
-
-  // KROK 2 - zlúč návrhy od Claude: jednoduchý zoznam uzlov (nodesJson),
-  // ktoré Claude pridal/upravil cez MCP nástroj. Vytvor alebo aktualizuj len
-  // tie, ktoré ešte na plátne nie sú s rovnakým obsahom (podľa id).
-  try {
-    const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
-    const state = await res.json();
-    for (const n of state.nodes || []) {
-      const id = createShapeId(n.id);
-      const existing = editor.getShape(id);
-      const props = {
-        geo: 'rectangle',
-        w: n.w,
-        h: n.h,
-        color: COLOR_MAP[n.color] || 'grey',
-        richText: toRichText(n.text || ''),
-      };
-      if (existing) {
-        editor.updateShape({ id, type: 'geo', x: n.x, y: n.y, props });
-      } else {
-        editor.createShape({ id, type: 'geo', x: n.x, y: n.y, props });
-      }
-    }
-  } catch (e) {
-    console.error('AI_OS canvas: merging simple node list failed', e);
-    setStatus('❌ Nepodarilo sa načítať plátno: ' + e);
-  }
-  editor.zoomToFit();
-}
-
-async function saveCanvas() {
-  const editor = editorRef;
-  if (!editor) return;
-  setStatus('Ukladám do GitHubu...');
-
-  // A) Plný tldraw snapshot - zachová VŠETKO (šípky, skupiny, čokoľvek Daniel
-  // nakreslil), cez oficiálne getSnapshot(editor.store).
-  try {
-    const snapshot = getSnapshot(editor.store);
-    await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(snapshot),
-    });
-  } catch (e) {
-    console.error('AI_OS canvas: snapshot save failed', e);
-    setStatus('❌ Snapshot zlyhal: ' + e);
+    diagLog('❌ Nepodarilo sa načítať React: ' + (e && e.message ? e.message : e), true);
     return;
   }
-
-  // B) Zjednodušený zoznam (len geo obdĺžniky, text vždy čítaný NAŽIVO cez
-  // renderPlaintextFromRichText - nie z cache) - pre mňa (Claude) cez MCP.
-  const shapes = editor.getCurrentPageShapes().filter((s) => s.type === 'geo');
-  const nodes = shapes.map((s) => {
-    let text = '';
-    try {
-      text = renderPlaintextFromRichText(editor, s.props.richText) || '';
-    } catch (e) {
-      console.warn('AI_OS canvas: could not read richText for shape', s.id, e);
-    }
-    return {
-      id: s.id,
-      x: Math.round(s.x),
-      y: Math.round(s.y),
-      w: s.props.w,
-      h: s.props.h,
-      text,
-      color: REVERSE_COLOR_MAP[s.props.color] || 'gray',
-    };
-  });
   try {
-    const resp = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ nodes, edges: [], updated_by: 'human' }),
-    });
-    const data = await resp.json();
-    setStatus(data.status === 'success' ? '✅ Uložené do GitHubu' : '❌ ' + (data.human || 'Chyba'));
+    const rdModule = await import('react-dom/client');
+    createRoot = rdModule.createRoot;
+    diagLog('✅ react-dom/client načítaný');
   } catch (e) {
-    setStatus('❌ ' + e);
+    diagLog('❌ Nepodarilo sa načítať react-dom/client: ' + (e && e.message ? e.message : e), true);
+    return;
   }
-}
-
-function addNode() {
   try {
+    const tldrawModule = await import('tldraw');
+    Tldraw = tldrawModule.Tldraw;
+    createShapeId = tldrawModule.createShapeId;
+    toRichText = tldrawModule.toRichText;
+    renderPlaintextFromRichText = tldrawModule.renderPlaintextFromRichText;
+    getSnapshot = tldrawModule.getSnapshot;
+    loadSnapshot = tldrawModule.loadSnapshot;
+    diagLog('✅ tldraw načítaný');
+  } catch (e) {
+    diagLog('❌ Nepodarilo sa načítať tldraw: ' + (e && e.message ? e.message : e), true);
+    return;
+  }
+  diagLog('✅ Všetko načítané, spúšťam plátno...');
+
+  function getToken() {
+    const p = new URLSearchParams(window.location.search);
+    return p.get('token') || window.__AIOS_TOKEN__ || '';
+  }
+
+  const COLOR_MAP = { green: 'green', amber: 'orange', gray: 'grey', blue: 'blue' };
+  const REVERSE_COLOR_MAP = { green: 'green', orange: 'amber', grey: 'gray', blue: 'blue' };
+  let editorRef = null;
+
+  function setStatus(text) {
+    const el = document.getElementById('statusText');
+    if (el) el.textContent = text;
+  }
+
+  async function loadCanvas(editor) {
+    try {
+      const snapRes = await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true');
+      const snapshot = await snapRes.json();
+      if (snapshot && snapshot.document) {
+        loadSnapshot(editor.store, snapshot);
+      }
+    } catch (e) {
+      console.warn('AI_OS canvas: no snapshot yet or failed to load, falling back to simple list', e);
+    }
+    try {
+      const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
+      const state = await res.json();
+      for (const n of state.nodes || []) {
+        const id = createShapeId(n.id);
+        const existing = editor.getShape(id);
+        const props = {
+          geo: 'rectangle',
+          w: n.w,
+          h: n.h,
+          color: COLOR_MAP[n.color] || 'grey',
+          richText: toRichText(n.text || ''),
+        };
+        if (existing) {
+          editor.updateShape({ id, type: 'geo', x: n.x, y: n.y, props });
+        } else {
+          editor.createShape({ id, type: 'geo', x: n.x, y: n.y, props });
+        }
+      }
+    } catch (e) {
+      console.error('AI_OS canvas: merging simple node list failed', e);
+      setStatus('❌ Nepodarilo sa načítať plátno: ' + e);
+    }
+    editor.zoomToFit();
+  }
+
+  async function saveCanvas() {
     const editor = editorRef;
-    if (!editor) {
-      setStatus('❌ Editor ešte nie je pripravený, skús o chvíľu.');
+    if (!editor) return;
+    setStatus('Ukladám do GitHubu...');
+    try {
+      const snapshot = getSnapshot(editor.store);
+      await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(snapshot),
+      });
+    } catch (e) {
+      console.error('AI_OS canvas: snapshot save failed', e);
+      setStatus('❌ Snapshot zlyhal: ' + e);
       return;
     }
-    const text = prompt('Text nového uzla:', 'Nový uzol');
-    if (!text) return;
-    editor.createShape({
-      id: createShapeId(),
-      type: 'geo',
-      x: 100,
-      y: 400,
-      props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
+    const shapes = editor.getCurrentPageShapes().filter((s) => s.type === 'geo');
+    const nodes = shapes.map((s) => {
+      let text = '';
+      try {
+        text = renderPlaintextFromRichText(editor, s.props.richText) || '';
+      } catch (e) {
+        console.warn('AI_OS canvas: could not read richText for shape', s.id, e);
+      }
+      return {
+        id: s.id,
+        x: Math.round(s.x),
+        y: Math.round(s.y),
+        w: s.props.w,
+        h: s.props.h,
+        text,
+        color: REVERSE_COLOR_MAP[s.props.color] || 'gray',
+      };
     });
-  } catch (e) {
-    console.error('AI_OS canvas: addNode failed', e);
-    setStatus('❌ Nový uzol zlyhal: ' + (e && e.message ? e.message : e));
+    try {
+      const resp = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ nodes, edges: [], updated_by: 'human' }),
+      });
+      const data = await resp.json();
+      setStatus(data.status === 'success' ? '✅ Uložené do GitHubu' : '❌ ' + (data.human || 'Chyba'));
+    } catch (e) {
+      setStatus('❌ ' + e);
+    }
   }
+
+  function addNode() {
+    try {
+      const editor = editorRef;
+      if (!editor) {
+        setStatus('❌ Editor ešte nie je pripravený, skús o chvíľu.');
+        return;
+      }
+      const text = prompt('Text nového uzla:', 'Nový uzol');
+      if (!text) return;
+      editor.createShape({
+        id: createShapeId(),
+        type: 'geo',
+        x: 100,
+        y: 400,
+        props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
+      });
+    } catch (e) {
+      console.error('AI_OS canvas: addNode failed', e);
+      setStatus('❌ Nový uzol zlyhal: ' + (e && e.message ? e.message : e));
+    }
+  }
+
+  window.aiosSave = saveCanvas;
+  window.aiosAddNode = addNode;
+
+  class CanvasErrorBoundary extends React.Component {
+    constructor(props) {
+      super(props);
+      this.state = { error: null };
+    }
+    static getDerivedStateFromError(error) {
+      return { error };
+    }
+    componentDidCatch(error, info) {
+      console.error('AI_OS canvas: React error boundary caught', error, info);
+    }
+    render() {
+      if (this.state.error) {
+        return React.createElement(
+          'div',
+          { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
+          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\\n\\n' +
+            (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
+        );
+      }
+      return this.props.children;
+    }
+  }
+
+  function App() {
+    const handleMount = (editor) => {
+      editorRef = editor;
+      loadCanvas(editor);
+    };
+    return React.createElement(
+      CanvasErrorBoundary,
+      null,
+      React.createElement(Tldraw, { onMount: handleMount })
+    );
+  }
+
+  const diagEl = document.getElementById('diag');
+  if (diagEl) diagEl.remove();
+  const root = createRoot(document.getElementById('root'));
+  root.render(React.createElement(App));
 }
 
-window.aiosSave = saveCanvas;
-window.aiosAddNode = addNode;
-
-// Globalny zachytavac chyb - ak nieco padne mimo React (napr. pri nacitani
-// modulu alebo v udalosti), zobraz to viditelne namiesto tichej bielej
-// obrazovky. Bez tohto by bolo nemozne diagnostikovat z konzoly na dialku.
 window.addEventListener('error', (e) => {
-  console.error('AI_OS canvas: global error', e.error || e.message);
-  setStatus('❌ Chyba skriptu: ' + (e.error && e.error.message ? e.error.message : e.message));
+  diagLog('❌ Chyba skriptu: ' + (e.error && e.error.message ? e.error.message : e.message), true);
 });
 window.addEventListener('unhandledrejection', (e) => {
-  console.error('AI_OS canvas: unhandled promise rejection', e.reason);
-  setStatus('❌ Chyba (promise): ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+  diagLog('❌ Chyba (promise): ' + (e.reason && e.reason.message ? e.reason.message : e.reason), true);
 });
 
-class CanvasErrorBoundary extends React.Component {
-  constructor(props) {
-    super(props);
-    this.state = { error: null };
-  }
-  static getDerivedStateFromError(error) {
-    return { error };
-  }
-  componentDidCatch(error, info) {
-    console.error('AI_OS canvas: React error boundary caught', error, info);
-  }
-  render() {
-    if (this.state.error) {
-      return React.createElement(
-        'div',
-        { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
-        '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
-          (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
-      );
-    }
-    return this.props.children;
-  }
-}
-
-function App() {
-  const handleMount = (editor) => {
-    editorRef = editor;
-    loadCanvas(editor);
-  };
-  return React.createElement(
-    CanvasErrorBoundary,
-    null,
-    React.createElement(Tldraw, { onMount: handleMount })
-  );
-}
-
-const root = createRoot(document.getElementById('root'));
-root.render(React.createElement(App));
+boot();
 """
     return Response(content=js, media_type="application/javascript; charset=utf-8")
 
