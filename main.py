@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.17.3-cap023f-silent-crash-canary"
+VERSION = "v2.18.0-cap023g-excalidraw"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -665,9 +665,9 @@ def canvas_save_state(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], 
     return {"status": "success", "human": f"Plátno uložené ({len(nodes)} uzlov, {len(edges)} prepojení).", "state": state}
 
 def canvas_get_snapshot() -> Optional[Dict[str, Any]]:
-    # Plny tldraw snapshot (getSnapshot/loadSnapshot) - zachovava VSETKO,
-    # co Daniel v prehliadaci nakresli (sipky, skupiny, akykolvek typ tvaru),
-    # nie len geo obdlzniky. Pouziva ho vyhradne prehliadac, nie MCP nastroje.
+    # Plny snapshot (Excalidraw elements) - zachovava VSETKO, co Daniel v
+    # prehliadaci nakresli (sipky, skupiny, akykolvek typ tvaru), nie len
+    # obdlzniky. Pouziva ho vyhradne prehliadac, nie MCP nastroje.
     raw = github_read_file(CANVAS_SNAPSHOT_PATH)
     if raw is None:
         return None
@@ -951,8 +951,8 @@ def canvas_page(token: Optional[str] = None):
     token_value = token or ""
     html = f"""<!doctype html><html lang="sk"><head><meta charset="utf-8"/>
 <meta name="viewport" content="width=device-width, initial-scale=1"/>
-<title>AI_OS — Živé plátno (tldraw)</title>
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/tldraw/tldraw.css"/>
+<title>AI_OS — Živé plátno (Excalidraw)</title>
+<link rel="stylesheet" href="https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/dev/index.css"/>
 <style>
 html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
 #toolbar{{position:fixed;top:0;left:0;right:0;height:48px;background:white;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:1000}}
@@ -967,17 +967,18 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
 <script type="importmap">
 {{
   "imports": {{
-    "react": "https://esm.sh/react@19.2.0",
-    "react-dom": "https://esm.sh/react-dom@19.2.0",
-    "react-dom/client": "https://esm.sh/react-dom@19.2.0/client",
-    "tldraw": "https://esm.sh/tldraw@5?target=es2022&deps=react@19.2.0,react-dom@19.2.0"
+    "react": "https://esm.sh/react@19.0.0",
+    "react/jsx-runtime": "https://esm.sh/react@19.0.0/jsx-runtime",
+    "react-dom": "https://esm.sh/react-dom@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
+    "excalidraw": "https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/dev/index.js?external=react,react-dom"
   }}
 }}
 </script>
 </head>
 <body>
 <div id="toolbar">
-  <h1>AI_OS — Živé plátno (tldraw)</h1>
+  <h1>AI_OS — Živé plátno (Excalidraw)</h1>
   <button onclick="window.aiosAddNode && window.aiosAddNode()">+ Nový uzol</button>
   <button onclick="window.aiosSave && window.aiosSave()">Uložiť do GitHubu</button>
   <span id="statusText" class="status"></span>
@@ -995,10 +996,10 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
     diag.appendChild(span);
   }}
   var urls = [
-    ['tldraw.css', 'https://cdn.jsdelivr.net/npm/tldraw/tldraw.css'],
-    ['react (esm.sh)', 'https://esm.sh/react@19.2.0'],
-    ['react-dom/client (esm.sh)', 'https://esm.sh/react-dom@19.2.0/client'],
-    ['tldraw JS (esm.sh)', 'https://esm.sh/tldraw@5?target=es2022&deps=react@19.2.0,react-dom@19.2.0']
+    ['Excalidraw CSS (esm.sh)', 'https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/dev/index.css'],
+    ['react (esm.sh)', 'https://esm.sh/react@19.0.0'],
+    ['react-dom/client (esm.sh)', 'https://esm.sh/react-dom@19.0.0/client'],
+    ['Excalidraw JS (esm.sh)', 'https://esm.sh/@excalidraw/excalidraw@0.18.0/dist/dev/index.js?external=react,react-dom']
   ];
   diag.textContent = '';
   line('Kontrolujem, či sa dajú stiahnuť potrebné súbory z internetu:');
@@ -1036,8 +1037,8 @@ function diagLog(text, isError) {
 async function boot() {
   window.__AIOS_APP_BOOTED__ = true;
   diagLog('');
-  diagLog('Načítavam React a tldraw (toto môže chvíľu trvať)...');
-  let React, createRoot, Tldraw, createShapeId, toRichText, renderPlaintextFromRichText, getSnapshot, loadSnapshot;
+  diagLog('Načítavam React a Excalidraw (toto môže chvíľu trvať)...');
+  let React, createRoot, Excalidraw, convertToExcalidrawElements, restoreElements;
   try {
     const reactModule = await import('react');
     React = reactModule.default || reactModule;
@@ -1055,16 +1056,13 @@ async function boot() {
     return;
   }
   try {
-    const tldrawModule = await import('tldraw');
-    Tldraw = tldrawModule.Tldraw;
-    createShapeId = tldrawModule.createShapeId;
-    toRichText = tldrawModule.toRichText;
-    renderPlaintextFromRichText = tldrawModule.renderPlaintextFromRichText;
-    getSnapshot = tldrawModule.getSnapshot;
-    loadSnapshot = tldrawModule.loadSnapshot;
-    diagLog('✅ tldraw načítaný');
+    const excalidrawModule = await import('excalidraw');
+    Excalidraw = excalidrawModule.Excalidraw;
+    convertToExcalidrawElements = excalidrawModule.convertToExcalidrawElements;
+    restoreElements = excalidrawModule.restoreElements;
+    diagLog('✅ Excalidraw načítaný');
   } catch (e) {
-    diagLog('❌ Nepodarilo sa načítať tldraw: ' + (e && e.message ? e.message : e), true);
+    diagLog('❌ Nepodarilo sa načítať Excalidraw: ' + (e && e.message ? e.message : e), true);
     return;
   }
   diagLog('✅ Všetko načítané, spúšťam plátno...');
@@ -1074,85 +1072,102 @@ async function boot() {
     return p.get('token') || window.__AIOS_TOKEN__ || '';
   }
 
-  const COLOR_MAP = { green: 'green', amber: 'orange', gray: 'grey', blue: 'blue' };
-  const REVERSE_COLOR_MAP = { green: 'green', orange: 'amber', grey: 'gray', blue: 'blue' };
-  let editorRef = null;
+  const COLOR_HEX = { green: '#b2f2bb', amber: '#ffec99', gray: '#e9ecef', blue: '#a5d8ff' };
+  const HEX_TO_COLOR = { '#b2f2bb': 'green', '#ffec99': 'amber', '#e9ecef': 'gray', '#a5d8ff': 'blue' };
+  let excalidrawAPI = null;
 
   function setStatus(text) {
     const el = document.getElementById('statusText');
     if (el) el.textContent = text;
   }
 
-  async function loadCanvas(editor) {
+  function textOf(rect, allElements) {
+    // Excalidraw neuklada text priamo v tvare - je to samostatny element
+    // previazany cez containerId. Najdeme ho medzi vsetkymi elementmi.
+    const bound = allElements.find((e) => e.type === 'text' && e.containerId === rect.id);
+    return bound ? bound.text || '' : '';
+  }
+
+  async function loadCanvas() {
+    // KROK 1 - plna vernost: obnov presne to, co bolo v prehliadaci
+    // naposledy ulozene (vsetky tvary, sipky, cokolvek), cez elements.
     try {
       const snapRes = await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const snapshot = await snapRes.json();
-      if (snapshot && snapshot.document) {
-        loadSnapshot(editor.store, snapshot);
+      if (snapshot && Array.isArray(snapshot.elements) && snapshot.elements.length) {
+        excalidrawAPI.updateScene({ elements: snapshot.elements });
       }
     } catch (e) {
       console.warn('AI_OS canvas: no snapshot yet or failed to load, falling back to simple list', e);
     }
+
+    // KROK 2 - zluc navrhy od Claude: jednoduchy zoznam uzlov, ktore
+    // Claude pridal/upravil cez MCP nastroj. Pridaj len tie, ktore este
+    // na platne nie su (podla id).
     try {
       const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const state = await res.json();
+      const existingIds = new Set(excalidrawAPI.getSceneElements().map((el) => el.id));
+      const toAdd = [];
       for (const n of state.nodes || []) {
-        const id = createShapeId(n.id);
-        const existing = editor.getShape(id);
-        const props = {
-          geo: 'rectangle',
-          w: n.w,
-          h: n.h,
-          color: COLOR_MAP[n.color] || 'grey',
-          richText: toRichText(n.text || ''),
-        };
-        if (existing) {
-          editor.updateShape({ id, type: 'geo', x: n.x, y: n.y, props });
-        } else {
-          editor.createShape({ id, type: 'geo', x: n.x, y: n.y, props });
-        }
+        if (existingIds.has(n.id)) continue;
+        toAdd.push({
+          type: 'rectangle',
+          id: n.id,
+          x: n.x,
+          y: n.y,
+          width: n.w,
+          height: n.h,
+          backgroundColor: COLOR_HEX[n.color] || COLOR_HEX.gray,
+          label: { text: n.text || '' },
+        });
+      }
+      if (toAdd.length) {
+        const newElements = convertToExcalidrawElements(toAdd, { regenerateIds: false });
+        excalidrawAPI.updateScene({
+          elements: [...excalidrawAPI.getSceneElements(), ...restoreElements(newElements, null)],
+        });
       }
     } catch (e) {
       console.error('AI_OS canvas: merging simple node list failed', e);
       setStatus('❌ Nepodarilo sa načítať plátno: ' + e);
     }
-    editor.zoomToFit();
+    try {
+      excalidrawAPI.scrollToContent();
+    } catch (e) {}
   }
 
   async function saveCanvas() {
-    const editor = editorRef;
-    if (!editor) return;
+    if (!excalidrawAPI) return;
     setStatus('Ukladám do GitHubu...');
+
+    // A) Plny snapshot - zachova VSETKO (sipky, skupiny, cokolvek Daniel
+    // nakreslil), cez oficialne getSnapshot(editor.store).
+    const allElements = excalidrawAPI.getSceneElements();
     try {
-      const snapshot = getSnapshot(editor.store);
       await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(snapshot),
+        body: JSON.stringify({ elements: allElements }),
       });
     } catch (e) {
       console.error('AI_OS canvas: snapshot save failed', e);
       setStatus('❌ Snapshot zlyhal: ' + e);
       return;
     }
-    const shapes = editor.getCurrentPageShapes().filter((s) => s.type === 'geo');
-    const nodes = shapes.map((s) => {
-      let text = '';
-      try {
-        text = renderPlaintextFromRichText(editor, s.props.richText) || '';
-      } catch (e) {
-        console.warn('AI_OS canvas: could not read richText for shape', s.id, e);
-      }
-      return {
-        id: s.id,
-        x: Math.round(s.x),
-        y: Math.round(s.y),
-        w: s.props.w,
-        h: s.props.h,
-        text,
-        color: REVERSE_COLOR_MAP[s.props.color] || 'gray',
-      };
-    });
+
+    // B) Zjednoduseny zoznam (len obdlzniky, text VZDY citany NAZIVO z
+    // previazaneho textoveho elementu, nie z cache) - pre mna (Claude).
+    const rects = allElements.filter((e) => e.type === 'rectangle' && !e.isDeleted);
+    const nodes = rects.map((r) => ({
+      id: r.id,
+      x: Math.round(r.x),
+      y: Math.round(r.y),
+      w: Math.round(r.width),
+      h: Math.round(r.height),
+      text: textOf(r, allElements),
+      color: HEX_TO_COLOR[(r.backgroundColor || '').toLowerCase()] || 'gray',
+    }));
     try {
       const resp = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true', {
         method: 'POST',
@@ -1168,19 +1183,25 @@ async function boot() {
 
   function addNode() {
     try {
-      const editor = editorRef;
-      if (!editor) {
+      if (!excalidrawAPI) {
         setStatus('❌ Editor ešte nie je pripravený, skús o chvíľu.');
         return;
       }
       const text = prompt('Text nového uzla:', 'Nový uzol');
       if (!text) return;
-      editor.createShape({
-        id: createShapeId(),
-        type: 'geo',
-        x: 100,
-        y: 400,
-        props: { geo: 'rectangle', w: 150, h: 60, color: 'blue', richText: toRichText(text) },
+      const newElements = convertToExcalidrawElements([
+        {
+          type: 'rectangle',
+          x: 100,
+          y: 400,
+          width: 150,
+          height: 60,
+          backgroundColor: COLOR_HEX.blue,
+          label: { text: text },
+        },
+      ]);
+      excalidrawAPI.updateScene({
+        elements: [...excalidrawAPI.getSceneElements(), ...restoreElements(newElements, null)],
       });
     } catch (e) {
       console.error('AI_OS canvas: addNode failed', e);
@@ -1207,7 +1228,7 @@ async function boot() {
         return React.createElement(
           'div',
           { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
-          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\\n\\n' +
+          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
             (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
         );
       }
@@ -1216,14 +1237,19 @@ async function boot() {
   }
 
   function App() {
-    const handleMount = (editor) => {
-      editorRef = editor;
-      loadCanvas(editor);
+    const handleApi = (api) => {
+      if (excalidrawAPI) return;
+      excalidrawAPI = api;
+      loadCanvas();
     };
     return React.createElement(
       CanvasErrorBoundary,
       null,
-      React.createElement(Tldraw, { onMount: handleMount })
+      React.createElement(
+        'div',
+        { style: { position: 'fixed', inset: 0, top: 48 } },
+        React.createElement(Excalidraw, { excalidrawAPI: handleApi })
+      )
     );
   }
 
@@ -1235,8 +1261,8 @@ async function boot() {
   const root = createRoot(document.getElementById('root'));
   root.render(React.createElement(App));
 
-  // Tichý pád bez JS chyby (napr. niečo mimo Reactu vyprázdni #root) -
-  // pravidelne kontroluj, či plátno stále existuje, a ak nie, ukáž to.
+  // Tichy pad bez JS chyby - pravidelne kontroluj, ci platno stale
+  // existuje, a ak nie, uka to.
   setInterval(() => {
     const rootEl = document.getElementById('root');
     const looksEmpty = !rootEl || rootEl.children.length === 0 || rootEl.innerHTML.trim() === '';
