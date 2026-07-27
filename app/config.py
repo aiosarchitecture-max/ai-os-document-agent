@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     # disabled by default; the read-only preview remains available.
     legacy_tasks_apply_on_startup: bool = False
     request_timeout_seconds: float = Field(default=60.0, ge=1, le=300)
+    canvas_max_payload_bytes: int = Field(default=5_000_000, ge=100_000, le=20_000_000)
 
 
 @lru_cache

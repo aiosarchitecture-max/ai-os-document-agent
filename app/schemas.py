@@ -96,3 +96,17 @@ class LegacyTaskImportResult(BaseModel):
     external_ids: list[str]
 
 
+class CanvasDocumentUpdate(BaseModel):
+    expected_version: int = Field(ge=0)
+    nodes: list[dict[str, Any]] = Field(default_factory=list, max_length=5000)
+    edges: list[dict[str, Any]] = Field(default_factory=list, max_length=10000)
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanvasDocumentRead(BaseModel):
+    version: int
+    nodes: list[dict[str, Any]]
+    edges: list[dict[str, Any]]
+    snapshot: dict[str, Any]
+    updated_by: str
+    updated_at: datetime | None

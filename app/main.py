@@ -1,10 +1,12 @@
 from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, Path
+from fastapi.responses import HTMLResponse, Response
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from .bridge_diagnostics import classify_bridge_error
+from .canvas import asset, read_canvas, save_canvas
 from .config import get_settings
 from .db import SessionLocal, create_schema, get_db
 from .legacy_migration import run_legacy_task_migration
@@ -12,6 +14,8 @@ from .models import AuditEvent, Task, TaskStatus
 from .schemas import (
     AuditEventRead,
     ApprovalRequest,
+    CanvasDocumentRead,
+    CanvasDocumentUpdate,
     CreateDocumentRequest,
     DangerousOperation,
     LegacyTaskImportRequest,
@@ -77,6 +81,45 @@ def health(db: Session = Depends(get_db)) -> dict:
         "database": "ok",
         "legacy_task_migration_preview": legacy_migration_preview,
     }
+
+
+@app.get("/canvas", response_class=HTMLResponse, include_in_schema=False)
+def canvas_page() -> HTMLResponse:
+    return HTMLResponse(
+        asset("canvas.html"),
+        headers={
+            "Cache-Control": "no-store",
+            "Referrer-Policy": "no-referrer",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@app.get("/canvas/app.js", include_in_schema=False)
+def canvas_javascript() -> Response:
+    return Response(
+        asset("canvas.js"),
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-store", "X-Content-Type-Options": "nosniff"},
+    )
+
+
+@app.get(
+    "/canvas/document",
+    response_model=CanvasDocumentRead,
+    dependencies=[Depends(require_api_token)],
+)
+def canvas_document_get(db: Session = Depends(get_db)):
+    return read_canvas(db)
+
+
+@app.put(
+    "/canvas/document",
+    response_model=CanvasDocumentRead,
+    dependencies=[Depends(require_api_token)],
+)
+def canvas_document_put(data: CanvasDocumentUpdate, db: Session = Depends(get_db)):
+    return save_canvas(db, data)
 
 
 @app.get("/tasks", response_model=list[TaskRead], dependencies=[Depends(require_api_token)])
