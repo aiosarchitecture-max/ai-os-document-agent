@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.18.2-cap023i-update-merge"
+VERSION = "v2.18.3-cap023j-recreate-merge"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1114,43 +1114,34 @@ async function boot() {
 
     // KROK 2 - zluc navrhy od Claude: jednoduchy zoznam uzlov, ktore
     // Claude pridal/upravil cez MCP nastroj. Existujuce uzly (rovnake id)
-    // sa AKTUALIZUJU (pozicia/velkost/farba/text), nove sa pridaju.
+    // sa ZMAZU a ZNOVA VYTVORIA cez convertToExcalidrawElements (aby sa
+    // spravne prepocitalo zalomenie textu - priama uprava .text to nerobi
+    // a spôsobuje orezany/nezalomeny text).
     try {
       const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const state = await res.json();
-      const nodesById = new Map((state.nodes || []).map((n) => [n.id, n]));
+      const managedIds = new Set((state.nodes || []).map((n) => n.id));
       const currentElements = excalidrawAPI.getSceneElements();
-      const existingIds = new Set(currentElements.map((el) => el.id));
-      const bump = (el) => ({ ...el, version: (el.version || 1) + 1, versionNonce: Math.floor(Math.random() * 2 ** 31) });
-      const updatedElements = currentElements.map((el) => {
-        if (el.type === 'rectangle' && nodesById.has(el.id)) {
-          const n = nodesById.get(el.id);
-          return bump({ ...el, x: n.x, y: n.y, width: n.w, height: n.h, backgroundColor: COLOR_HEX[n.color] || COLOR_HEX.gray });
-        }
-        if (el.type === 'text' && el.containerId && nodesById.has(el.containerId)) {
-          const n = nodesById.get(el.containerId);
-          return bump({ ...el, text: n.text || '', originalText: n.text || '' });
-        }
-        return el;
+      // Ponechaj vsetko, co Claude nespravuje (volne kresby Daniela).
+      const keptElements = currentElements.filter((el) => {
+        if (el.type === 'rectangle' && managedIds.has(el.id)) return false;
+        if (el.type === 'text' && el.containerId && managedIds.has(el.containerId)) return false;
+        return true;
       });
-      const toAdd = [];
-      for (const n of state.nodes || []) {
-        if (existingIds.has(n.id)) continue;
-        toAdd.push({
-          type: 'rectangle',
-          id: n.id,
-          x: n.x,
-          y: n.y,
-          width: n.w,
-          height: n.h,
-          backgroundColor: COLOR_HEX[n.color] || COLOR_HEX.gray,
-          label: { text: n.text || '' },
-        });
-      }
-      let finalElements = updatedElements;
-      if (toAdd.length) {
-        const newElements = convertToExcalidrawElements(toAdd, { regenerateIds: false });
-        finalElements = [...updatedElements, ...restoreElements(newElements, null)];
+      const toCreate = (state.nodes || []).map((n) => ({
+        type: 'rectangle',
+        id: n.id,
+        x: n.x,
+        y: n.y,
+        width: n.w,
+        height: n.h,
+        backgroundColor: COLOR_HEX[n.color] || COLOR_HEX.gray,
+        label: { text: n.text || '' },
+      }));
+      let finalElements = keptElements;
+      if (toCreate.length) {
+        const newElements = convertToExcalidrawElements(toCreate, { regenerateIds: false });
+        finalElements = [...keptElements, ...restoreElements(newElements, null)];
       }
       excalidrawAPI.updateScene({ elements: finalElements });
     } catch (e) {
