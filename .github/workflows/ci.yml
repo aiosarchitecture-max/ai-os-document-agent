@@ -28,8 +28,23 @@ jobs:
               f"instead (expected {expected}, got {actual})"
           )
           render = Path("render.yaml").read_text(encoding="utf-8")
-          assert "uvicorn app.main:app" in render
+          assert "uvicorn app.drive_first:app" in render
           assert "uvicorn main:app" not in render
+          PY
+      - name: Verify Drive-first workspace contract
+        run: |
+          python - <<'PY'
+          from app.drive_first import app
+          schema = app.openapi()
+          operation = schema["paths"]["/integrations/drive-workspace/sync"]["post"]
+          assert operation["security"] == [{"BearerAuth": []}]
+          render = open("render.yaml", encoding="utf-8").read()
+          assert "python -m app.drive_workspace_worker" in render
+          assert 'schedule: "*/10 * * * *"' in render
+          source = open("app/drive_workspace.py", encoding="utf-8").read()
+          assert "READ_SHEET_ROWS" in source
+          assert "APPEND_SHEET_ROW" in source
+          assert "drive-intake:" in source
           PY
       - name: Verify PostgreSQL is the only canvas persistence
         run: |
@@ -44,7 +59,7 @@ jobs:
       - name: Verify Render runtime exposes CAP-023 securely
         run: |
           python - <<'PY'
-          from app.main import app
+          from app.drive_first import app
           schema = app.openapi()
           assert "/canvas/document" in schema["paths"]
           for operation in schema["paths"]["/canvas/document"].values():
@@ -54,9 +69,8 @@ jobs:
           assert "?token=" not in source
           assert "Authorization" in source
           assert "@excalidraw/excalidraw@0.18.0" in html
-          assert "@excalidraw/excalidraw@" in html
           render = open("render.yaml", encoding="utf-8").read()
-          assert "uvicorn app.main:app" in render
+          assert "uvicorn app.drive_first:app" in render
           PY
 
   staging-migration-preview:
@@ -110,7 +124,7 @@ jobs:
             --retry 6 --retry-delay 10 --retry-all-errors \
             "$base/canvas/document")
           test "$code" = "401"
-      - name: Validate deployed CAP-023 contract
+      - name: Validate deployed contracts
         run: |
           python - <<'PY'
           import json
@@ -121,8 +135,10 @@ jobs:
           assert health.get("status") == "ok"
           assert health.get("database") == "ok"
           assert "/canvas/document" in schema["paths"]
+          assert "/integrations/drive-workspace/sync" in schema["paths"]
           for operation in schema["paths"]["/canvas/document"].values():
               assert operation["security"] == [{"BearerAuth": []}]
+          assert schema["paths"]["/integrations/drive-workspace/sync"]["post"]["security"] == [{"BearerAuth": []}]
           assert "AI_OS — Živé plátno" in html
           assert "?token=" not in source
           assert "Authorization" in source
