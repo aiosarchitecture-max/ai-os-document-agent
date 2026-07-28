@@ -6,8 +6,8 @@
       "y": 60,
       "w": 150,
       "h": 60,
-      "text": "D1\nKomunikácia",
-      "color": "green"
+      "text": "D1 Komunikácia\n(zatiaľ DRAFT)",
+      "color": "amber"
     },
     {
       "id": "D4",
@@ -15,7 +15,7 @@
       "y": 61,
       "w": 150,
       "h": 60,
-      "text": "ouhjnjnncvy&y\ndv",
+      "text": "D4 Produkcia\n(aktívna, CAP-017–023)",
       "color": "green"
     },
     {
@@ -24,7 +24,7 @@
       "y": 63,
       "w": 150,
       "h": 60,
-      "text": "D5 Kvalita",
+      "text": "D5 Kvalita\n(Reviewer funguje)",
       "color": "green"
     },
     {
@@ -33,7 +33,7 @@
       "y": 60,
       "w": 150,
       "h": 60,
-      "text": "D7 Riadenie",
+      "text": "D7 Riadenie\n(aktívne)",
       "color": "green"
     },
     {
@@ -42,7 +42,7 @@
       "y": 180,
       "w": 150,
       "h": 60,
-      "text": "D2 Šírenie",
+      "text": "D2 Šírenie\n(nezačaté)",
       "color": "amber"
     },
     {
@@ -51,7 +51,7 @@
       "y": 180,
       "w": 150,
       "h": 60,
-      "text": "D3 Financie",
+      "text": "D3 Financie\n(nezačaté)",
       "color": "amber"
     },
     {
@@ -60,29 +60,11 @@
       "y": 180,
       "w": 150,
       "h": 60,
-      "text": "D6 Verejnosť",
+      "text": "D6 Verejnosť\n(nezačaté)",
       "color": "amber"
-    },
-    {
-      "id": "zU9rLATSJ1eBfgXGx3Oed",
-      "x": 310,
-      "y": 279,
-      "w": 169,
-      "h": 35,
-      "text": "",
-      "color": "gray"
-    },
-    {
-      "id": "lqdjihPcJlCLA-ZxHvcC0",
-      "x": 145,
-      "y": 448,
-      "w": 150,
-      "h": 60,
-      "text": "test",
-      "color": "blue"
     }
   ],
   "edges": [],
-  "updated_at": "2026-07-28T07:21:16.586895+00:00",
-  "updated_by": "human"
+  "updated_at": "2026-07-28T07:30:05.185294+00:00",
+  "updated_by": "claude"
 }
