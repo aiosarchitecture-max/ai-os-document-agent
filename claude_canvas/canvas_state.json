@@ -1,0 +1,70 @@
+{
+  "nodes": [
+    {
+      "id": "D1",
+      "x": 40,
+      "y": 60,
+      "w": 170,
+      "h": 70,
+      "text": "D1 Komunikácia (DRAFT)",
+      "color": "amber"
+    },
+    {
+      "id": "D4",
+      "x": 211,
+      "y": 61,
+      "w": 150,
+      "h": 60,
+      "text": "D4 Produkcia (aktívna)",
+      "color": "green"
+    },
+    {
+      "id": "D5",
+      "x": 398,
+      "y": 63,
+      "w": 150,
+      "h": 60,
+      "text": "D5 Kvalita (aktívna)",
+      "color": "green"
+    },
+    {
+      "id": "D7",
+      "x": 580,
+      "y": 60,
+      "w": 150,
+      "h": 60,
+      "text": "D7 Riadenie (aktívne)",
+      "color": "green"
+    },
+    {
+      "id": "D2",
+      "x": 130,
+      "y": 200,
+      "w": 170,
+      "h": 70,
+      "text": "D2 Šírenie (nezačaté)",
+      "color": "amber"
+    },
+    {
+      "id": "D3",
+      "x": 330,
+      "y": 200,
+      "w": 170,
+      "h": 70,
+      "text": "D3 Financie (nezačaté)",
+      "color": "amber"
+    },
+    {
+      "id": "D6",
+      "x": 530,
+      "y": 200,
+      "w": 170,
+      "h": 70,
+      "text": "D6 Verejnosť (nezačaté)",
+      "color": "amber"
+    }
+  ],
+  "edges": [],
+  "updated_at": "2026-07-28T13:47:24.967455+00:00",
+  "updated_by": "claude"
+}
