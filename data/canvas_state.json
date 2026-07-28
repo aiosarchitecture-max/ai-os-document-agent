@@ -1,0 +1,79 @@
+{
+  "nodes": [
+    {
+      "id": "D1",
+      "x": 40,
+      "y": 60,
+      "w": 150,
+      "h": 60,
+      "text": "D1\nKomunikácia",
+      "color": "green"
+    },
+    {
+      "id": "D4",
+      "x": 211,
+      "y": 61,
+      "w": 150,
+      "h": 60,
+      "text": "ouhjnjnncvy&y\ndv",
+      "color": "green"
+    },
+    {
+      "id": "D5",
+      "x": 398,
+      "y": 63,
+      "w": 150,
+      "h": 60,
+      "text": "D5 Kvalita",
+      "color": "green"
+    },
+    {
+      "id": "D7",
+      "x": 580,
+      "y": 60,
+      "w": 150,
+      "h": 60,
+      "text": "D7 Riadenie",
+      "color": "green"
+    },
+    {
+      "id": "D2",
+      "x": 130,
+      "y": 180,
+      "w": 150,
+      "h": 60,
+      "text": "D2 Šírenie",
+      "color": "amber"
+    },
+    {
+      "id": "D3",
+      "x": 310,
+      "y": 180,
+      "w": 150,
+      "h": 60,
+      "text": "D3 Financie",
+      "color": "amber"
+    },
+    {
+      "id": "D6",
+      "x": 490,
+      "y": 180,
+      "w": 150,
+      "h": 60,
+      "text": "D6 Verejnosť",
+      "color": "amber"
+    },
+    {
+      "id": "zU9rLATSJ1eBfgXGx3Oed",
+      "x": 310,
+      "y": 279,
+      "w": 169,
+      "h": 35,
+      "text": "",
+      "color": "gray"
+    }
+  ],
+  "edges": [],
+  "updated_at": "2026-07-28T07:18:13.635773+00:00",
+  "updated_by": "human"
+}
