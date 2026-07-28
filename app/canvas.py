@@ -2,6 +2,7 @@ import json
 from pathlib import Path
 
 from fastapi import HTTPException
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from .config import get_settings
@@ -10,6 +11,7 @@ from .schemas import CanvasDocumentRead, CanvasDocumentUpdate
 
 
 CANVAS_ID = "primary"
+CANVAS_WRITE_LOCK_ID = 1095786323
 ASSET_DIR = Path(__file__).with_name("static")
 
 
@@ -43,6 +45,20 @@ def read_canvas(db: Session) -> CanvasDocumentRead:
     return CanvasDocumentRead.model_validate(record, from_attributes=True)
 
 
+def _lock_canvas_write(db: Session) -> None:
+    """Serialize singleton canvas writes, including the first insert.
+
+    ``SELECT ... FOR UPDATE`` cannot lock a row that does not exist yet. A
+    transaction-scoped PostgreSQL advisory lock closes that initial-write race
+    without changing the schema. SQLite remains unchanged for local tests.
+    """
+    if db.get_bind().dialect.name == "postgresql":
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(:lock_id)"),
+            {"lock_id": CANVAS_WRITE_LOCK_ID},
+        )
+
+
 def save_canvas(db: Session, data: CanvasDocumentUpdate) -> CanvasDocumentRead:
     serialized_size = len(
         json.dumps(data.model_dump(), ensure_ascii=False, separators=(",", ":")).encode()
@@ -50,6 +66,7 @@ def save_canvas(db: Session, data: CanvasDocumentUpdate) -> CanvasDocumentRead:
     if serialized_size > get_settings().canvas_max_payload_bytes:
         raise HTTPException(status_code=413, detail="Canvas payload is too large")
 
+    _lock_canvas_write(db)
     record = (
         db.query(CanvasDocument)
         .filter(CanvasDocument.id == CANVAS_ID)
