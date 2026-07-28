@@ -16,6 +16,21 @@ jobs:
       - run: python -m compileall app tests migrations
       - run: python -m pytest -q
       - run: node apps-script/test/bridge.test.js
+      - name: Verify legacy root runtime remains quarantined
+        run: |
+          python - <<'PY'
+          import subprocess
+          from pathlib import Path
+          expected = "42017cbb90d5f31006d5dc8b99ca31430a48b3ad"
+          actual = subprocess.check_output(["git", "hash-object", "main.py"], text=True).strip()
+          assert actual == expected, (
+              "legacy root main.py changed directly; migrate the change to app/ through a reviewed PR "
+              f"instead (expected {expected}, got {actual})"
+          )
+          render = Path("render.yaml").read_text(encoding="utf-8")
+          assert "uvicorn app.main:app" in render
+          assert "uvicorn main:app" not in render
+          PY
       - name: Verify PostgreSQL is the only canvas persistence
         run: |
           python - <<'PY'
