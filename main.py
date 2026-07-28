@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.18.0-cap023g-excalidraw"
+VERSION = "v2.18.1-cap023h-selfcheck-diag"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1008,6 +1008,13 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
       .then(function(r) {{ line((r.ok ? '✅ OK ' : '❌ CHYBA (' + r.status + ') ') + pair[0], r.ok ? 'ok' : 'fail'); }})
       .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) ' + pair[0] + ' — ' + e.message, 'fail'); }});
   }});
+  // Samostatna kontrola NASHO VLASTNEHO app.js - doteraz sme kontrolovali
+  // len externe CDN subory, nikdy vlastny skript. Ak toto zlyha, problem
+  // je na nasej strane (server), nie u esm.sh.
+  fetch('/canvas/app.js?token=' + encodeURIComponent(window.__AIOS_TOKEN__ || ''))
+    .then(function(r) {{ return r.text().then(function(t) {{ return {{ok: r.ok, status: r.status, len: t.length, head: t.slice(0, 80)}}; }}); }})
+    .then(function(info) {{ line((info.ok ? '✅ OK ' : '❌ CHYBA (' + info.status + ') ') + '/canvas/app.js (' + info.len + ' znakov, začína: ' + info.head.replace(/\\n/g, ' ') + ')', info.ok ? 'ok' : 'fail'); }})
+    .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) /canvas/app.js — ' + e.message, 'fail'); }});
   window.__AIOS_APP_BOOTED__ = false;
   setTimeout(function() {{
     if (!window.__AIOS_APP_BOOTED__) {{
@@ -1015,9 +1022,13 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
       line('⚠️ Aplikácia (app.js) sa nespustila do 8 sekúnd. Skopíruj CELÝ tento text a pošli ho Claudovi.', 'fail');
     }}
   }}, 8000);
+  var moduleScript = document.createElement('script');
+  moduleScript.type = 'module';
+  moduleScript.src = '/canvas/app.js';
+  moduleScript.onerror = function() {{ line('❌ Prehliadač odmietol spustiť /canvas/app.js ako modul (script onerror).', 'fail'); }};
+  document.body.appendChild(moduleScript);
 }})();
 </script>
-<script type="module" src="/canvas/app.js"></script>
 </body></html>"""
     return HTMLResponse(html)
 
@@ -1142,7 +1153,7 @@ async function boot() {
     setStatus('Ukladám do GitHubu...');
 
     // A) Plny snapshot - zachova VSETKO (sipky, skupiny, cokolvek Daniel
-    // nakreslil), cez oficialne getSnapshot(editor.store).
+    // nakreslil).
     const allElements = excalidrawAPI.getSceneElements();
     try {
       await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
@@ -1228,7 +1239,7 @@ async function boot() {
         return React.createElement(
           'div',
           { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
-          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
+          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\\n\\n' +
             (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
         );
       }
