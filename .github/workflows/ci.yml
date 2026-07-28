@@ -16,6 +16,16 @@ jobs:
       - run: python -m compileall app tests migrations
       - run: python -m pytest -q
       - run: node apps-script/test/bridge.test.js
+      - name: Verify PostgreSQL is the only canvas persistence
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          assert not Path("data/canvas_state.json").exists(), "legacy GitHub canvas state must not return"
+          source = Path("app/static/canvas.js").read_text(encoding="utf-8")
+          assert "canvas_state.json" not in source
+          assert "api.github.com" not in source
+          assert "Authorization" in source
+          PY
       - name: Verify Render runtime exposes CAP-023 securely
         run: |
           python - <<'PY'
