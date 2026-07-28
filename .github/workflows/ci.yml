@@ -16,6 +16,23 @@ jobs:
       - run: python -m compileall app tests migrations
       - run: python -m pytest -q
       - run: node apps-script/test/bridge.test.js
+      - name: Verify Render runtime exposes CAP-023 securely
+        run: |
+          python - <<'PY'
+          from app.main import app
+          schema = app.openapi()
+          assert "/canvas/document" in schema["paths"]
+          for operation in schema["paths"]["/canvas/document"].values():
+              assert operation["security"] == [{"BearerAuth": []}]
+          source = open("app/static/canvas.js", encoding="utf-8").read()
+          html = open("app/static/canvas.html", encoding="utf-8").read()
+          assert "?token=" not in source
+          assert "Authorization" in source
+          assert "@excalidraw/excalidraw@0.18.0" in html
+          assert "@excalidraw/excalidraw@" in html
+          render = open("render.yaml", encoding="utf-8").read()
+          assert "uvicorn app.main:app" in render
+          PY
 
   staging-migration-preview:
     if: github.event_name == 'pull_request'

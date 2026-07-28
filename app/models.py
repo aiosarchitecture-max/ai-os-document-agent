@@ -145,3 +145,18 @@ class DocumentRegistry(Base):
     metadata_json: Mapped[dict] = mapped_column(JSON, default=dict)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, onupdate=utcnow)
 
+
+class CanvasDocument(Base):
+    """Singleton canvas document stored in the authoritative database."""
+
+    __tablename__ = "canvas_documents"
+
+    id: Mapped[str] = mapped_column(String(80), primary_key=True, default="primary")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nodes: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    edges: Mapped[list] = mapped_column(JSON, nullable=False, default=list)
+    snapshot: Mapped[dict] = mapped_column(JSON, nullable=False, default=dict)
+    updated_by: Mapped[str] = mapped_column(String(200), nullable=False, default="system")
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow
+    )
