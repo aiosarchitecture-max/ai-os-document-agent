@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.18.3-cap023j-recreate-merge"
+VERSION = "v2.19.0-cap023k-claude-canvas-path"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -35,8 +35,8 @@ GITHUB_OWNER = os.getenv("GITHUB_OWNER", "aiosarchitecture-max").strip()
 GITHUB_REPO = os.getenv("GITHUB_REPO", "ai-os-document-agent").strip()
 GITHUB_API_BASE = "https://api.github.com"
 
-CANVAS_STATE_PATH = "data/canvas_state.json"
-CANVAS_SNAPSHOT_PATH = "data/canvas_snapshot.json"
+CANVAS_STATE_PATH = "claude_canvas/canvas_state.json"
+CANVAS_SNAPSHOT_PATH = "claude_canvas/canvas_snapshot.json"
 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
@@ -668,6 +668,9 @@ def canvas_get_snapshot() -> Optional[Dict[str, Any]]:
     # Plny snapshot (Excalidraw elements) - zachovava VSETKO, co Daniel v
     # prehliadaci nakresli (sipky, skupiny, akykolvek typ tvaru), nie len
     # obdlzniky. Pouziva ho vyhradne prehliadac, nie MCP nastroje.
+    # Cesta claude_canvas/ (nie data/) - GPT-ov "legacy cleanup" proces
+    # opakovane mazal data/canvas_state.json ako "legacy JSON", cim
+    # poskodzoval tento zdielany canvas. Viz AI_OS_AGENT_BRIDGE.
     raw = github_read_file(CANVAS_SNAPSHOT_PATH)
     if raw is None:
         return None
@@ -1244,7 +1247,7 @@ async function boot() {
         return React.createElement(
           'div',
           { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
-          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\\n\\n' +
+          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
             (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
         );
       }
