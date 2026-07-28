@@ -71,9 +71,18 @@
       "h": 35,
       "text": "",
       "color": "gray"
+    },
+    {
+      "id": "lqdjihPcJlCLA-ZxHvcC0",
+      "x": 145,
+      "y": 448,
+      "w": 150,
+      "h": 60,
+      "text": "test",
+      "color": "blue"
     }
   ],
   "edges": [],
-  "updated_at": "2026-07-28T07:18:13.635773+00:00",
+  "updated_at": "2026-07-28T07:18:46.515639+00:00",
   "updated_by": "human"
 }
