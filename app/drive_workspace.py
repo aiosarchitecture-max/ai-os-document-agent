@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import get_settings
-from .models import AuditEvent, Task, TaskStatus
+from .models import AuditEvent, Task
 from .schemas import TaskCreate
 from .services import TASK_REGISTER_HEADERS, call_apps_script, create_task
 
@@ -60,10 +60,10 @@ def _priority(value: str) -> int:
 
 
 def parse_drive_intake_rows(rows: list[list]) -> list[TaskCreate]:
-    """Parse user-authored rows from the shared Drive task register.
+    """Parse human-authored rows from the shared Google Drive task register.
 
-    Rows with a populated task_id are system projection rows and are ignored.
-    Human intake rows must keep task_id blank and provide a stable external_id.
+    Rows with task_id are system projection rows. A human intake row keeps task_id
+    blank and supplies a stable external_id plus title.
     """
     if not rows:
         return []
@@ -77,9 +77,7 @@ def parse_drive_intake_rows(rows: list[list]) -> list[TaskCreate]:
         task_id = _cell(row, 0)
         external_id = _cell(row, 1)
         title = _cell(row, 6)
-        if task_id or not external_id or not title:
-            continue
-        if external_id in seen:
+        if task_id or not external_id or not title or external_id in seen:
             continue
         seen.add(external_id)
         tasks.append(
@@ -137,22 +135,21 @@ async def import_drive_workspace(db: Session) -> tuple[int, int, int]:
 
 
 async def project_tasks_to_drive(db: Session) -> int:
-    """Append only task versions not yet projected to the human-readable Drive register."""
+    """Append only task versions not yet projected to the human-readable register."""
     settings = get_settings()
     if not settings.task_register_spreadsheet_id:
         raise HTTPException(status_code=503, detail={"code": "drive_workspace_not_configured"})
 
     projected = 0
     for task in db.scalars(select(Task).order_by(Task.created_at.asc())):
-        already = db.scalar(
+        events = db.scalars(
             select(AuditEvent).where(
                 AuditEvent.event_type == "TASK_DRIVE_PROJECTED",
                 AuditEvent.entity_type == "task",
                 AuditEvent.entity_id == task.id,
-                AuditEvent.payload["version"].as_integer() == task.version,
             )
         )
-        if already:
+        if any(event.payload.get("version") == task.version for event in events):
             continue
         values = [
             task.id,
