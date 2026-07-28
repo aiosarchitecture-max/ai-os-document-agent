@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.18.1-cap023h-selfcheck-diag"
+VERSION = "v2.18.2-cap023i-update-merge"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1113,12 +1113,26 @@ async function boot() {
     }
 
     // KROK 2 - zluc navrhy od Claude: jednoduchy zoznam uzlov, ktore
-    // Claude pridal/upravil cez MCP nastroj. Pridaj len tie, ktore este
-    // na platne nie su (podla id).
+    // Claude pridal/upravil cez MCP nastroj. Existujuce uzly (rovnake id)
+    // sa AKTUALIZUJU (pozicia/velkost/farba/text), nove sa pridaju.
     try {
       const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const state = await res.json();
-      const existingIds = new Set(excalidrawAPI.getSceneElements().map((el) => el.id));
+      const nodesById = new Map((state.nodes || []).map((n) => [n.id, n]));
+      const currentElements = excalidrawAPI.getSceneElements();
+      const existingIds = new Set(currentElements.map((el) => el.id));
+      const bump = (el) => ({ ...el, version: (el.version || 1) + 1, versionNonce: Math.floor(Math.random() * 2 ** 31) });
+      const updatedElements = currentElements.map((el) => {
+        if (el.type === 'rectangle' && nodesById.has(el.id)) {
+          const n = nodesById.get(el.id);
+          return bump({ ...el, x: n.x, y: n.y, width: n.w, height: n.h, backgroundColor: COLOR_HEX[n.color] || COLOR_HEX.gray });
+        }
+        if (el.type === 'text' && el.containerId && nodesById.has(el.containerId)) {
+          const n = nodesById.get(el.containerId);
+          return bump({ ...el, text: n.text || '', originalText: n.text || '' });
+        }
+        return el;
+      });
       const toAdd = [];
       for (const n of state.nodes || []) {
         if (existingIds.has(n.id)) continue;
@@ -1133,12 +1147,12 @@ async function boot() {
           label: { text: n.text || '' },
         });
       }
+      let finalElements = updatedElements;
       if (toAdd.length) {
         const newElements = convertToExcalidrawElements(toAdd, { regenerateIds: false });
-        excalidrawAPI.updateScene({
-          elements: [...excalidrawAPI.getSceneElements(), ...restoreElements(newElements, null)],
-        });
+        finalElements = [...updatedElements, ...restoreElements(newElements, null)];
       }
+      excalidrawAPI.updateScene({ elements: finalElements });
     } catch (e) {
       console.error('AI_OS canvas: merging simple node list failed', e);
       setStatus('❌ Nepodarilo sa načítať plátno: ' + e);
