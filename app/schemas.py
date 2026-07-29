@@ -57,3 +57,8 @@ class CreateDocumentRequest(BaseModel):
     title: str = Field(min_length=1, max_length=500)
     content: str = Field(default="", max_length=100000)
 
+
+class AppendDocumentRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+    file_id: str = Field(min_length=1, max_length=500)
+    text: str = Field(min_length=1, max_length=100000)
