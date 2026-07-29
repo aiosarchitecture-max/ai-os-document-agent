@@ -7,7 +7,14 @@ from sqlalchemy.orm import Session
 from .config import get_settings
 from .db import create_schema, get_db
 from .models import Task, TaskStatus
-from .schemas import ApprovalRequest, CreateDocumentRequest, DangerousOperation, TaskCreate, TaskRead
+from .schemas import (
+    AppendDocumentRequest,
+    ApprovalRequest,
+    CreateDocumentRequest,
+    DangerousOperation,
+    TaskCreate,
+    TaskRead,
+)
 from .security import consume_approval, issue_approval, require_api_token
 from .services import call_apps_script, create_task, transition_task
 
@@ -88,6 +95,22 @@ async def apps_script_create_document(data: CreateDocumentRequest) -> dict:
     )
 
 
+@app.post("/docs/append", dependencies=[Depends(require_api_token)])
+@app.post("/integrations/apps-script/documents/append", dependencies=[Depends(require_api_token)])
+async def append_to_document(data: AppendDocumentRequest) -> dict:
+    """Append text to an existing AI_OS Google Doc.
+
+    APPEND_TO_DOC is the public Orchestrator capability name. The deployed
+    Apps Script bridge already exposes the equivalent, root-scoped APPEND_DOC
+    action, so the Orchestrator translates the canonical name at this boundary.
+    """
+    return await call_apps_script(
+        "APPEND_DOC",
+        {"documentId": data.file_id, "text": data.text},
+        request_id=data.request_id,
+    )
+
+
 @app.get("/boot", dependencies=[Depends(require_api_token)])
 def boot() -> dict:
     return {
@@ -96,4 +119,5 @@ def boot() -> dict:
         "architecture": "modular-postgres",
         "workflow": ["NEW", "RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"],
         "compatibility": "Legacy bridge remains available during migration",
+        "capabilities": ["CREATE_DOC", "APPEND_TO_DOC"],
     }
