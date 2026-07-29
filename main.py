@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.19.0-cap023k-claude-canvas-path"
+VERSION = "v2.19.1-cap023l-global-error-catch"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -1018,6 +1018,16 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
     .then(function(r) {{ return r.text().then(function(t) {{ return {{ok: r.ok, status: r.status, len: t.length, head: t.slice(0, 80)}}; }}); }})
     .then(function(info) {{ line((info.ok ? '✅ OK ' : '❌ CHYBA (' + info.status + ') ') + '/canvas/app.js (' + info.len + ' znakov, začína: ' + info.head.replace(/\\n/g, ' ') + ')', info.ok ? 'ok' : 'fail'); }})
     .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) /canvas/app.js — ' + e.message, 'fail'); }});
+  // Globalny zachytavac REGISTROVANY MIMO app.js - ak by mal app.js
+  // syntakticku/parse chybu, ziadny kod VNUTRI neho (vratane jeho
+  // vlastnych error listenerov) by sa vobec nespustil. Tento listener tu
+  // existuje uz predtym, takze CDN/parse chyby modulu zachyti aj tak.
+  window.addEventListener('error', function(e) {{
+    line('❌ GLOBÁLNA chyba (mimo app.js): ' + (e.message || e.error) + (e.filename ? ' [' + e.filename + ':' + e.lineno + ']' : ''), 'fail');
+  }});
+  window.addEventListener('unhandledrejection', function(e) {{
+    line('❌ GLOBÁLNA chyba (promise, mimo app.js): ' + (e.reason && e.reason.message ? e.reason.message : e.reason), 'fail');
+  }});
   window.__AIOS_APP_BOOTED__ = false;
   setTimeout(function() {{
     if (!window.__AIOS_APP_BOOTED__) {{
