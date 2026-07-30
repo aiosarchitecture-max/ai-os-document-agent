@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Res
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.19.1-cap023l-global-error-catch"
+VERSION = "v2.20.0-append-to-doc"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -117,6 +117,7 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
     {"name": "aios_create_task", "description": "CAP-020 — Vytvorí novú úlohu v AI_OS_TASKS (spracuje ju Cron Worker do ~10 min). Aj mobilný formulár na /tasks/new.", "method": "POST", "path": "/tasks/create?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_canvas_get", "description": "CAP-023 — Načíta aktuálny stav živého plátna (uzly/hrany).", "method": "GET", "path": "/canvas/state?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_canvas_save", "description": "CAP-023 — Uloží kompletný stav živého plátna (uzly/hrany).", "method": "POST", "path": "/canvas/state?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
+    {"name": "aios_append_to_doc", "description": "Dopíše text na koniec existujúceho Google Docu v povolenom priestore AI_OS.", "method": "POST", "path": "/documents/append?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
 ]
 
 def utc_now() -> str:
@@ -295,6 +296,18 @@ def register_event(event_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
     event["apps_script_status"] = script_result.get("status")
     event["apps_script_http_status"] = script_result.get("http_status")
     return event
+
+def append_to_doc(file_id: str, text: str, request_id_value: str = "") -> Dict[str, Any]:
+    file_id = (file_id or "").strip()
+    text = text or ""
+    if not file_id:
+        return {"status": "error", "code": "FILE_ID_REQUIRED", "message": "file_id je povinné."}
+    if not text.strip():
+        return {"status": "error", "code": "TEXT_REQUIRED", "message": "text nesmie byť prázdny."}
+    payload: Dict[str, Any] = {"documentId": file_id, "fileId": file_id, "text": text}
+    if request_id_value:
+        payload["requestId"] = request_id_value
+    return post_to_apps_script("APPEND_DOC", payload)
 
 def move_file(file_id: str, target_folder_id: str, confirm_id: str) -> Dict[str, Any]:
     return post_to_apps_script("MOVE_FILE", {"fileId": file_id, "targetFolderId": target_folder_id, "confirm_id": confirm_id})
@@ -685,6 +698,21 @@ def canvas_save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     if result.get("status") != "success":
         return {"status": "error", "human": result.get("human", "Uloženie snapshotu zlyhalo.")}
     return {"status": "success", "human": "Snapshot plátna uložený (plná vernosť: šípky, skupiny, všetky tvary)."}
+
+@app.post("/documents/append")
+async def documents_append(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    file_id = str(body.get("file_id") or body.get("fileId") or body.get("document_id") or body.get("documentId") or "").strip()
+    text = str(body.get("text") or "")
+    request_id_value = str(body.get("request_id") or body.get("requestId") or request_id()).strip()
+    result = append_to_doc(file_id=file_id, text=text, request_id_value=request_id_value)
+    return apps_script_result_to_response(result, debug)
 
 @app.post("/files/move")
 async def files_move(request: Request, token: Optional[str] = None):
@@ -1336,6 +1364,11 @@ async def github_write_file_endpoint(request: Request, token: Optional[str] = No
         return plain_or_json({"status": "error", "human": "Chýba path alebo content.", "version": VERSION}, debug)
     result = github_write_file(path, content, commit_message)
     return plain_or_json({**result, "version": VERSION, "time_utc": utc_now()}, debug)
+
+@mcp.tool()
+def aios_append_to_doc(file_id: str, text: str, request_id_value: str = "") -> dict:
+    """Dopíše text na koniec existujúceho Google Docu."""
+    return append_to_doc(file_id=file_id, text=text, request_id_value=request_id_value or request_id())
 
 @mcp.tool()
 def aios_boot() -> dict:
