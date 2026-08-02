@@ -47,7 +47,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ivv/readonly"
           chmod 0555 "$RUNNER_TEMP/ivv/readonly"
           preflight_fail=0
-          bwrap --unshare-user --uid 0 --gid 0 --die-with-parent --ro-bind / / /bin/true |& tee "$E/runner-userns-probe.txt" || preflight_fail=1
+          (bwrap --unshare-user --uid 0 --gid 0 --die-with-parent --ro-bind / / /bin/true && echo RUNNER_USERNS_PASS) |& tee "$E/runner-userns-probe.txt" || preflight_fail=1
           cd "$RUNNER_TEMP/ivv/candidate"
           python3 -c 'from scripts.sandbox_runner import preflight; print(preflight())' |& tee "$E/candidate-preflight.txt"
           grep -q "(True," "$E/candidate-preflight.txt" || preflight_fail=1
