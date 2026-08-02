@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
         yield
 
 
-app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
+app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan, redirect_slashes=False)
 
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
