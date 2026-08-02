@@ -47,10 +47,15 @@ jobs:
           mkdir -p "$RUNNER_TEMP/ivv/readonly"
           chmod 0555 "$RUNNER_TEMP/ivv/readonly"
           preflight_fail=0
-          bwrap --unshare-all --die-with-parent --new-session --ro-bind /usr /usr --ro-bind /bin /bin --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /usr/bin/true || preflight_fail=1
-          if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /bin/sh -c "test -r '$CANARY'"; then echo HOST_READ_UNEXPECTED; preflight_fail=1; else echo HOST_READ_DENIED; fi
-          if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind "$RUNNER_TEMP/ivv/readonly" /evidence --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /bin/sh -c 'echo x >/evidence/escape'; then echo EXTERNAL_WRITE_UNEXPECTED; preflight_fail=1; else echo EXTERNAL_WRITE_DENIED; fi
-          if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /usr/bin/python3 -c 'import socket; socket.create_connection(("1.1.1.1",53),1)'; then echo NETWORK_UNEXPECTED; preflight_fail=1; else echo NETWORK_DENIED; fi
+          bwrap --unshare-user --uid 0 --gid 0 --die-with-parent --ro-bind / / /bin/true |& tee "$E/runner-userns-probe.txt" || preflight_fail=1
+          cd "$RUNNER_TEMP/ivv/candidate"
+          python3 -c 'from scripts.sandbox_runner import preflight; print(preflight())' |& tee "$E/candidate-preflight.txt"
+          grep -q "(True," "$E/candidate-preflight.txt" || preflight_fail=1
+          if [ "$preflight_fail" -eq 0 ]; then
+            if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /bin/sh -c "test -r '$CANARY'"; then echo HOST_READ_UNEXPECTED; preflight_fail=1; else echo HOST_READ_DENIED; fi
+            if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind "$RUNNER_TEMP/ivv/readonly" /evidence --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /bin/sh -c 'echo x >/evidence/escape'; then echo EXTERNAL_WRITE_UNEXPECTED; preflight_fail=1; else echo EXTERNAL_WRITE_DENIED; fi
+            if bwrap --unshare-all --die-with-parent --ro-bind /usr /usr --ro-bind /bin /bin --proc /proc --dev /dev --tmpfs /tmp --dir /work --chdir /work --clearenv --setenv PATH /usr/bin:/bin /usr/bin/python3 -c 'import socket; socket.create_connection(("1.1.1.1",53),1)'; then echo NETWORK_UNEXPECTED; preflight_fail=1; else echo NETWORK_DENIED; fi
+          fi
           printf '#!/usr/bin/python3\nopen("%s","w").write("ran")\n' "$RUNNER_TEMP/ivv/subject-ran" > "$RUNNER_TEMP/ivv/heldout/fail_closed_subject.py"
           if printf '{}\n' | env PATH=/no-bwrap /usr/bin/python3 "$RUNNER_TEMP/ivv/candidate/scripts/sandbox_runner.py" "$RUNNER_TEMP/ivv/heldout/fail_closed_subject.py" | tee "$E/fail-closed.json" | grep -q '"exit": 125'; then true; else preflight_fail=1; fi
           test ! -e "$RUNNER_TEMP/ivv/subject-ran" || preflight_fail=1
