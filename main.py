@@ -16,11 +16,11 @@ from typing import Any, Dict, List, Optional
 
 import requests
 from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse, Response
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.20.0-append-to-doc"
+VERSION = "v2.21.0-oauth-autoapprove"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -678,12 +678,6 @@ def canvas_save_state(nodes: List[Dict[str, Any]], edges: List[Dict[str, Any]], 
     return {"status": "success", "human": f"Plátno uložené ({len(nodes)} uzlov, {len(edges)} prepojení).", "state": state}
 
 def canvas_get_snapshot() -> Optional[Dict[str, Any]]:
-    # Plny snapshot (Excalidraw elements) - zachovava VSETKO, co Daniel v
-    # prehliadaci nakresli (sipky, skupiny, akykolvek typ tvaru), nie len
-    # obdlzniky. Pouziva ho vyhradne prehliadac, nie MCP nastroje.
-    # Cesta claude_canvas/ (nie data/) - GPT-ov "legacy cleanup" proces
-    # opakovane mazal data/canvas_state.json ako "legacy JSON", cim
-    # poskodzoval tento zdielany canvas. Viz AI_OS_AGENT_BRIDGE.
     raw = github_read_file(CANVAS_SNAPSHOT_PATH)
     if raw is None:
         return None
@@ -698,6 +692,103 @@ def canvas_save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     if result.get("status") != "success":
         return {"status": "error", "human": result.get("human", "Uloženie snapshotu zlyhalo.")}
     return {"status": "success", "human": "Snapshot plátna uložený (plná vernosť: šípky, skupiny, všetky tvary)."}
+
+# =====================================================
+# MINIMALNY, AUTOMATICKY SCHVALUJUCI OAuth "OBAL"
+# =====================================================
+# Dovod: Claude (claude.ai web konektor) sa VZDY pokusa o OAuth Dynamic
+# Client Registration pri pripajani vlastneho MCP konektora, aj ked
+# server ziadnu autentifikaciu nevyzaduje (nas /mcp endpoint token
+# vobec nekontroluje). Bez tychto endpointov zlyhava pripojenie chybou
+# "Couldn't register with AI_OS Orchestrator's sign-in service" -
+# zdokumentovane aj v Claude Help Center a znamych GitHub issues.
+# Riesenie: jednoduchy, jednorelacny (single-tenant) OAuth flow, ktory
+# vzdy automaticky "schvali" a vrati existujuci API_TOKEN ako pristupovy
+# token - ziadne prihlasovacie obrazovky, ziadna databaza pouzivatelov,
+# kedze toto je Danielov osobny system s jednym administratorom.
+_oauth_codes: Dict[str, Dict[str, Any]] = {}
+
+def _oauth_issuer() -> str:
+    return f"https://{PUBLIC_HOSTNAME}"
+
+@app.get("/.well-known/oauth-authorization-server")
+def oauth_authorization_server_metadata():
+    issuer = _oauth_issuer()
+    return JSONResponse({
+        "issuer": issuer,
+        "authorization_endpoint": f"{issuer}/oauth/authorize",
+        "token_endpoint": f"{issuer}/oauth/token",
+        "registration_endpoint": f"{issuer}/oauth/register",
+        "response_types_supported": ["code"],
+        "grant_types_supported": ["authorization_code", "refresh_token"],
+        "code_challenge_methods_supported": ["S256", "plain"],
+        "token_endpoint_auth_methods_supported": ["none"],
+    })
+
+@app.get("/.well-known/oauth-protected-resource")
+def oauth_protected_resource_metadata():
+    issuer = _oauth_issuer()
+    return JSONResponse({
+        "resource": f"{issuer}/mcp",
+        "authorization_servers": [issuer],
+    })
+
+@app.post("/oauth/register")
+async def oauth_register(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    client_id = f"aios-{uuid.uuid4().hex[:16]}"
+    redirect_uris = body.get("redirect_uris") or ["https://claude.ai/api/mcp/auth_callback"]
+    return JSONResponse({
+        "client_id": client_id,
+        "redirect_uris": redirect_uris,
+        "token_endpoint_auth_method": "none",
+        "grant_types": ["authorization_code", "refresh_token"],
+        "response_types": ["code"],
+    }, status_code=201)
+
+@app.get("/oauth/authorize")
+def oauth_authorize(request: Request):
+    params = request.query_params
+    redirect_uri = params.get("redirect_uri", "")
+    state = params.get("state", "")
+    code_challenge = params.get("code_challenge", "")
+    if not redirect_uri:
+        return PlainTextResponse("Chýba redirect_uri.", status_code=400)
+    code = uuid.uuid4().hex
+    _oauth_codes[code] = {"code_challenge": code_challenge, "created_at": utc_now()}
+    sep = "&" if "?" in redirect_uri else "?"
+    location = f"{redirect_uri}{sep}code={code}"
+    if state:
+        location += f"&state={state}"
+    return RedirectResponse(location, status_code=302)
+
+@app.post("/oauth/token")
+async def oauth_token(request: Request):
+    content_type = request.headers.get("content-type", "")
+    if "application/json" in content_type:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    else:
+        form = await request.form()
+        body = dict(form)
+    grant_type = str(body.get("grant_type") or "")
+    if grant_type == "authorization_code":
+        code = str(body.get("code") or "")
+        if code not in _oauth_codes:
+            return JSONResponse({"error": "invalid_grant"}, status_code=400)
+    elif grant_type != "refresh_token":
+        return JSONResponse({"error": "unsupported_grant_type"}, status_code=400)
+    return JSONResponse({
+        "access_token": API_TOKEN,
+        "token_type": "Bearer",
+        "expires_in": 31536000,
+        "refresh_token": f"aios-refresh-{uuid.uuid4().hex}",
+    })
 
 @app.post("/documents/append")
 async def documents_append(request: Request, token: Optional[str] = None):
@@ -1039,17 +1130,10 @@ html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
       .then(function(r) {{ line((r.ok ? '✅ OK ' : '❌ CHYBA (' + r.status + ') ') + pair[0], r.ok ? 'ok' : 'fail'); }})
       .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) ' + pair[0] + ' — ' + e.message, 'fail'); }});
   }});
-  // Samostatna kontrola NASHO VLASTNEHO app.js - doteraz sme kontrolovali
-  // len externe CDN subory, nikdy vlastny skript. Ak toto zlyha, problem
-  // je na nasej strane (server), nie u esm.sh.
   fetch('/canvas/app.js?token=' + encodeURIComponent(window.__AIOS_TOKEN__ || ''))
     .then(function(r) {{ return r.text().then(function(t) {{ return {{ok: r.ok, status: r.status, len: t.length, head: t.slice(0, 80)}}; }}); }})
     .then(function(info) {{ line((info.ok ? '✅ OK ' : '❌ CHYBA (' + info.status + ') ') + '/canvas/app.js (' + info.len + ' znakov, začína: ' + info.head.replace(/\\n/g, ' ') + ')', info.ok ? 'ok' : 'fail'); }})
     .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) /canvas/app.js — ' + e.message, 'fail'); }});
-  // Globalny zachytavac REGISTROVANY MIMO app.js - ak by mal app.js
-  // syntakticku/parse chybu, ziadny kod VNUTRI neho (vratane jeho
-  // vlastnych error listenerov) by sa vobec nespustil. Tento listener tu
-  // existuje uz predtym, takze CDN/parse chyby modulu zachyti aj tak.
   window.addEventListener('error', function(e) {{
     line('❌ GLOBÁLNA chyba (mimo app.js): ' + (e.message || e.error) + (e.filename ? ' [' + e.filename + ':' + e.lineno + ']' : ''), 'fail');
   }});
@@ -1134,15 +1218,11 @@ async function boot() {
   }
 
   function textOf(rect, allElements) {
-    // Excalidraw neuklada text priamo v tvare - je to samostatny element
-    // previazany cez containerId. Najdeme ho medzi vsetkymi elementmi.
     const bound = allElements.find((e) => e.type === 'text' && e.containerId === rect.id);
     return bound ? bound.text || '' : '';
   }
 
   async function loadCanvas() {
-    // KROK 1 - plna vernost: obnov presne to, co bolo v prehliadaci
-    // naposledy ulozene (vsetky tvary, sipky, cokolvek), cez elements.
     try {
       const snapRes = await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const snapshot = await snapRes.json();
@@ -1153,17 +1233,11 @@ async function boot() {
       console.warn('AI_OS canvas: no snapshot yet or failed to load, falling back to simple list', e);
     }
 
-    // KROK 2 - zluc navrhy od Claude: jednoduchy zoznam uzlov, ktore
-    // Claude pridal/upravil cez MCP nastroj. Existujuce uzly (rovnake id)
-    // sa ZMAZU a ZNOVA VYTVORIA cez convertToExcalidrawElements (aby sa
-    // spravne prepocitalo zalomenie textu - priama uprava .text to nerobi
-    // a spôsobuje orezany/nezalomeny text).
     try {
       const res = await fetch('/canvas/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
       const state = await res.json();
       const managedIds = new Set((state.nodes || []).map((n) => n.id));
       const currentElements = excalidrawAPI.getSceneElements();
-      // Ponechaj vsetko, co Claude nespravuje (volne kresby Daniela).
       const keptElements = currentElements.filter((el) => {
         if (el.type === 'rectangle' && managedIds.has(el.id)) return false;
         if (el.type === 'text' && el.containerId && managedIds.has(el.containerId)) return false;
@@ -1198,8 +1272,6 @@ async function boot() {
     if (!excalidrawAPI) return;
     setStatus('Ukladám do GitHubu...');
 
-    // A) Plny snapshot - zachova VSETKO (sipky, skupiny, cokolvek Daniel
-    // nakreslil).
     const allElements = excalidrawAPI.getSceneElements();
     try {
       await fetch('/canvas/snapshot?token=' + encodeURIComponent(getToken()) + '&debug=true', {
@@ -1213,8 +1285,6 @@ async function boot() {
       return;
     }
 
-    // B) Zjednoduseny zoznam (len obdlzniky, text VZDY citany NAZIVO z
-    // previazaneho textoveho elementu, nie z cache) - pre mna (Claude).
     const rects = allElements.filter((e) => e.type === 'rectangle' && !e.isDeleted);
     const nodes = rects.map((r) => ({
       id: r.id,
@@ -1318,8 +1388,6 @@ async function boot() {
   const root = createRoot(document.getElementById('root'));
   root.render(React.createElement(App));
 
-  // Tichy pad bez JS chyby - pravidelne kontroluj, ci platno stale
-  // existuje, a ak nie, uka to.
   setInterval(() => {
     const rootEl = document.getElementById('root');
     const looksEmpty = !rootEl || rootEl.children.length === 0 || rootEl.innerHTML.trim() === '';
