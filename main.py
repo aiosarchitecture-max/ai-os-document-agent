@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.21.0-oauth-autoapprove"
+VERSION = "v2.21.2-oauth-path-suffixed-metadata"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -83,7 +83,7 @@ async def lifespan(_app: FastAPI):
         yield
 
 
-app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan, redirect_slashes=False)
+app = FastAPI(title=APP_NAME, version=VERSION, lifespan=lifespan)
 
 RUNTIME_STATE: Dict[str, Any] = {
     "system": "AI_OS",
@@ -712,6 +712,7 @@ def _oauth_issuer() -> str:
     return f"https://{PUBLIC_HOSTNAME}"
 
 @app.get("/.well-known/oauth-authorization-server")
+@app.get("/.well-known/oauth-authorization-server/mcp")
 def oauth_authorization_server_metadata():
     issuer = _oauth_issuer()
     return JSONResponse({
@@ -726,6 +727,7 @@ def oauth_authorization_server_metadata():
     })
 
 @app.get("/.well-known/oauth-protected-resource")
+@app.get("/.well-known/oauth-protected-resource/mcp")
 def oauth_protected_resource_metadata():
     issuer = _oauth_issuer()
     return JSONResponse({
