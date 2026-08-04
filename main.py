@@ -20,7 +20,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 
-VERSION = "v2.21.3-apps-script-redirect-fix"
+VERSION = "v2.21.3-apps-script-redirect-get-fix"
 APP_NAME = "AI_OS LLM Developer Bridge"
 
 API_TOKEN = os.getenv("API_TOKEN", "").strip()
@@ -148,12 +148,12 @@ def post_to_apps_script(action: str, payload: Optional[Dict[str, Any]] = None) -
     body = {"secret": APPS_SCRIPT_SECRET, "action": action, "payload": payload or {}, "source": "AI_OS_RENDER_FASTAPI", "version": VERSION, "time_utc": utc_now()}
     try:
         # Google Apps Script web app na /exec VZDY vrati 302 pri POST. Prva POST
-        # poziadavka uz sposobi spustenie doPost() na strane Google - vysledok je
-        # v tom momente hotovy. Presmerovanie (na script.googleusercontent.com) treba
-        # nasledovat s GET, NIE POST - opakovany POST na presmerovanu URL vracia
-        # 405 Method Not Allowed (Allow: HEAD, GET). Automaticke .post() presmerovanie
-        # v kniznici requests malo v praxi nekonzistentne spravanie (obcas zasiahlo
-        # doGet namiesto skutocneho vysledku doPost), preto oba kroky riadime explicitne.
+        # poziadavka uz spusti doPost() a vysledok je hotovy; presmerovanie treba
+        # nasledovat s GET (nie POST) - opakovany POST na presmerovanu
+        # (script.googleusercontent.com) URL vracia 405 Method Not Allowed.
+        # Standardne automaticke presmerovanie v kniznici requests nie je pre
+        # tento pripad spolahlive (nekonzistentne spravanie), preto sa oba kroky
+        # riadia explicitne.
         # Zdroj: https://medium.com/google-cloud/understanding-flow-of-request-to-web-apps-created-by-google-apps-script-ac49e80f7c6b
         response = requests.post(APPS_SCRIPT_WEBAPP_URL, json=body, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=False)
         redirect_hops = 0
