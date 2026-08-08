@@ -1372,7 +1372,7 @@ async function boot() {
         return React.createElement(
           'div',
           { style: { padding: 24, fontFamily: 'monospace', whiteSpace: 'pre-wrap', color: '#991b1b' } },
-          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\n\n' +
+          '❌ Plátno spadlo s chybou (skopíruj toto Claudovi):\\n\\n' +
             (this.state.error && this.state.error.stack ? this.state.error.stack : String(this.state.error))
         );
       }
