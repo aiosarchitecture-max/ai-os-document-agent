@@ -1,9 +1,54 @@
 {
   "nodes": [
     {
+      "id": "FOUNDER",
+      "x": 610,
+      "y": 0,
+      "w": 170,
+      "h": 60,
+      "text": "Zakladateľ / Majiteľ",
+      "color": "amber"
+    },
+    {
+      "id": "CEO",
+      "x": 610,
+      "y": 90,
+      "w": 170,
+      "h": 60,
+      "text": "CEO",
+      "color": "amber"
+    },
+    {
+      "id": "CAO",
+      "x": 350,
+      "y": 190,
+      "w": 170,
+      "h": 50,
+      "text": "CAO – Administration Officer",
+      "color": "amber"
+    },
+    {
+      "id": "CPO",
+      "x": 610,
+      "y": 190,
+      "w": 170,
+      "h": 50,
+      "text": "CPO – Production Officer",
+      "color": "amber"
+    },
+    {
+      "id": "CCO",
+      "x": 870,
+      "y": 190,
+      "w": 170,
+      "h": 50,
+      "text": "CCO – Communication Officer",
+      "color": "amber"
+    },
+    {
       "id": "D7",
       "x": 40,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-7 Riadenie",
@@ -12,7 +57,7 @@
     {
       "id": "D1",
       "x": 230,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-1 Administratíva a komunikácia",
@@ -21,7 +66,7 @@
     {
       "id": "D2",
       "x": 420,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-2 Marketing a predaj",
@@ -30,7 +75,7 @@
     {
       "id": "D3",
       "x": 610,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-3 Financie",
@@ -39,7 +84,7 @@
     {
       "id": "D4",
       "x": 800,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-4 Produkcia",
@@ -48,7 +93,7 @@
     {
       "id": "D5",
       "x": 990,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-5 Kvalita",
@@ -57,7 +102,7 @@
     {
       "id": "D6",
       "x": 1180,
-      "y": 40,
+      "y": 300,
       "w": 170,
       "h": 70,
       "text": "D-6 Informovanie verejnosti (PR)",
@@ -66,189 +111,189 @@
     {
       "id": "O21",
       "x": 40,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O21 Kancelária zdroja",
       "color": "green"
     },
     {
       "id": "O20",
       "x": 40,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O20 Špeciálnych záležitostí",
       "color": "green"
     },
     {
       "id": "O19",
       "x": 40,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O19 Kancelária CEO",
       "color": "green"
     },
     {
       "id": "O1",
       "x": 230,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O1 Smerovanie procesov a personálu",
       "color": "green"
     },
     {
       "id": "O2",
       "x": 230,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O2 Komunikácie",
       "color": "green"
     },
     {
       "id": "O3",
       "x": 230,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O3 Inšpekcie, správy a štatistiky",
       "color": "green"
     },
     {
       "id": "O4",
       "x": 420,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O4 Marketing a propagácia",
       "color": "green"
     },
     {
       "id": "O5",
       "x": 420,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O5 Publikácie a vzťahy so zákazníkmi",
       "color": "green"
     },
     {
       "id": "O6",
       "x": 420,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O6 Predaj a analýzy obchodu",
       "color": "green"
     },
     {
       "id": "O7",
       "x": 610,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O7 Príjmy",
       "color": "green"
     },
     {
       "id": "O8",
       "x": 610,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O8 Výdaje",
       "color": "green"
     },
     {
       "id": "O9",
       "x": 610,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O9 Evidencia aktív a vybavenia",
       "color": "green"
     },
     {
       "id": "O10",
       "x": 800,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O10 Služby pre produkciu",
       "color": "green"
     },
     {
       "id": "O11",
       "x": 800,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O11 Sklad",
       "color": "green"
     },
     {
       "id": "O12",
       "x": 800,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O12 Expedícia",
       "color": "green"
     },
     {
       "id": "O13",
       "x": 990,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O13 Kontrola kvality",
       "color": "green"
     },
     {
       "id": "O14",
       "x": 990,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O14 Zlepšovanie personálu",
       "color": "green"
     },
     {
       "id": "O15",
       "x": 990,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O15 Náprava",
       "color": "green"
     },
     {
       "id": "O16",
       "x": 1180,
-      "y": 150,
+      "y": 410,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O16 Informácie pre verejnosť",
       "color": "green"
     },
     {
       "id": "O17",
       "x": 1180,
-      "y": 210,
+      "y": 465,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O17 Expanzia",
       "color": "green"
     },
     {
       "id": "O18",
       "x": 1180,
-      "y": 270,
+      "y": 520,
       "w": 170,
-      "h": 50,
+      "h": 45,
       "text": "O18 Úspech",
       "color": "green"
     }
@@ -256,110 +301,165 @@
   "edges": [
     {
       "id": "E1",
+      "from": "FOUNDER",
+      "to": "CEO"
+    },
+    {
+      "id": "E2",
+      "from": "CEO",
+      "to": "CAO"
+    },
+    {
+      "id": "E3",
+      "from": "CEO",
+      "to": "CPO"
+    },
+    {
+      "id": "E4",
+      "from": "CEO",
+      "to": "CCO"
+    },
+    {
+      "id": "E5",
+      "from": "CEO",
+      "to": "D7"
+    },
+    {
+      "id": "E6",
+      "from": "CEO",
+      "to": "D1"
+    },
+    {
+      "id": "E7",
+      "from": "CEO",
+      "to": "D2"
+    },
+    {
+      "id": "E8",
+      "from": "CEO",
+      "to": "D3"
+    },
+    {
+      "id": "E9",
+      "from": "CEO",
+      "to": "D4"
+    },
+    {
+      "id": "E10",
+      "from": "CEO",
+      "to": "D5"
+    },
+    {
+      "id": "E11",
+      "from": "CEO",
+      "to": "D6"
+    },
+    {
+      "id": "E12",
       "from": "D7",
       "to": "O21"
     },
     {
-      "id": "E2",
+      "id": "E13",
       "from": "D7",
       "to": "O20"
     },
     {
-      "id": "E3",
+      "id": "E14",
       "from": "D7",
       "to": "O19"
     },
     {
-      "id": "E4",
+      "id": "E15",
       "from": "D1",
       "to": "O1"
     },
     {
-      "id": "E5",
+      "id": "E16",
       "from": "D1",
       "to": "O2"
     },
     {
-      "id": "E6",
+      "id": "E17",
       "from": "D1",
       "to": "O3"
     },
     {
-      "id": "E7",
+      "id": "E18",
       "from": "D2",
       "to": "O4"
     },
     {
-      "id": "E8",
+      "id": "E19",
       "from": "D2",
       "to": "O5"
     },
     {
-      "id": "E9",
+      "id": "E20",
       "from": "D2",
       "to": "O6"
     },
     {
-      "id": "E10",
+      "id": "E21",
       "from": "D3",
       "to": "O7"
     },
     {
-      "id": "E11",
+      "id": "E22",
       "from": "D3",
       "to": "O8"
     },
     {
-      "id": "E12",
+      "id": "E23",
       "from": "D3",
       "to": "O9"
     },
     {
-      "id": "E13",
+      "id": "E24",
       "from": "D4",
       "to": "O10"
     },
     {
-      "id": "E14",
+      "id": "E25",
       "from": "D4",
       "to": "O11"
     },
     {
-      "id": "E15",
+      "id": "E26",
       "from": "D4",
       "to": "O12"
     },
     {
-      "id": "E16",
+      "id": "E27",
       "from": "D5",
       "to": "O13"
     },
     {
-      "id": "E17",
+      "id": "E28",
       "from": "D5",
       "to": "O14"
     },
     {
-      "id": "E18",
+      "id": "E29",
       "from": "D5",
       "to": "O15"
     },
     {
-      "id": "E19",
+      "id": "E30",
       "from": "D6",
       "to": "O16"
     },
     {
-      "id": "E20",
+      "id": "E31",
       "from": "D6",
       "to": "O17"
     },
     {
-      "id": "E21",
+      "id": "E32",
       "from": "D6",
       "to": "O18"
     }
   ],
-  "updated_at": "2026-08-08T07:08:59.680786+00:00",
+  "updated_at": "2026-08-08T10:54:07.856198+00:00",
   "updated_by": "claude"
 }
