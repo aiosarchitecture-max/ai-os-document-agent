@@ -2,464 +2,409 @@
   "nodes": [
     {
       "id": "FOUNDER",
-      "x": 610,
+      "x": 40,
       "y": 0,
       "w": 170,
       "h": 60,
-      "text": "Zakladateľ / Majiteľ",
+      "text": "Zakladateľ, zdroj, majiteľ",
       "color": "amber"
     },
     {
       "id": "CEO",
       "x": 610,
-      "y": 90,
-      "w": 170,
+      "y": 0,
+      "w": 150,
       "h": 60,
-      "text": "CEO",
+      "text": "CEO (Chief Executive Officer)",
       "color": "amber"
     },
     {
       "id": "CAO",
-      "x": 350,
-      "y": 190,
-      "w": 170,
+      "x": 270,
+      "y": 90,
+      "w": 150,
       "h": 50,
-      "text": "CAO – Administration Officer",
+      "text": "CAO – Chief Administration Officer",
       "color": "amber"
     },
     {
       "id": "CPO",
-      "x": 610,
-      "y": 190,
-      "w": 170,
+      "x": 800,
+      "y": 90,
+      "w": 150,
       "h": 50,
-      "text": "CPO – Production Officer",
+      "text": "CPO – Chief Production Officer",
       "color": "amber"
     },
     {
       "id": "CCO",
-      "x": 870,
-      "y": 190,
+      "x": 1180,
+      "y": 90,
       "w": 170,
       "h": 50,
-      "text": "CCO – Communication Officer",
+      "text": "CCO – Chief Communication Officer",
       "color": "amber"
     },
     {
       "id": "D7",
       "x": 40,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-7 Riadenie",
+      "text": "Sekcia 7. Riadenie",
       "color": "amber"
     },
     {
       "id": "D1",
       "x": 230,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-1 Administratíva a komunikácia",
+      "text": "Sekcia 1. Administratíva a komunikácia",
       "color": "amber"
     },
     {
       "id": "D2",
       "x": 420,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-2 Marketing a predaj",
+      "text": "Sekcia 2. Marketing a predaj",
       "color": "amber"
     },
     {
       "id": "D3",
       "x": 610,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-3 Financie",
+      "text": "Sekcia 3. Financie",
       "color": "amber"
     },
     {
       "id": "D4",
       "x": 800,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-4 Produkcia",
+      "text": "Sekcia 4. Produkcia",
       "color": "amber"
     },
     {
       "id": "D5",
       "x": 990,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-5 Kvalita",
+      "text": "Sekcia 5. Kvalita",
       "color": "amber"
     },
     {
       "id": "D6",
       "x": 1180,
-      "y": 300,
+      "y": 190,
       "w": 170,
       "h": 70,
-      "text": "D-6 Informovanie verejnosti (PR)",
+      "text": "Sekcia 6. Informovanie verejnosti (PR)",
       "color": "amber"
     },
     {
       "id": "O21",
       "x": 40,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O21 Kancelária zdroja",
+      "text": "21 – Kancelária zdroja",
       "color": "green"
     },
     {
       "id": "O20",
       "x": 40,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O20 Špeciálnych záležitostí",
+      "text": "20 – Špeciálnych záležitostí",
       "color": "green"
     },
     {
       "id": "O19",
       "x": 40,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O19 Kancelária CEO",
+      "text": "19 – Kancelária CEO",
       "color": "green"
     },
     {
       "id": "O1",
       "x": 230,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O1 Smerovanie procesov a personálu",
+      "text": "1 – Smerovania procesov a personálu",
       "color": "green"
     },
     {
       "id": "O2",
       "x": 230,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O2 Komunikácie",
+      "text": "2 – Komunikácií",
       "color": "green"
     },
     {
       "id": "O3",
       "x": 230,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O3 Inšpekcie, správy a štatistiky",
+      "text": "3 – Inšpekcie, správ a štatistík",
       "color": "green"
     },
     {
       "id": "O4",
       "x": 420,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O4 Marketing a propagácia",
+      "text": "4 – Marketingu a propagácie",
       "color": "green"
     },
     {
       "id": "O5",
       "x": 420,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O5 Publikácie a vzťahy so zákazníkmi",
+      "text": "5 – Publikácií a vzťahov so zákazníkmi",
       "color": "green"
     },
     {
       "id": "O6",
       "x": 420,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O6 Predaj a analýzy obchodu",
+      "text": "6 – Predaja a analýz obchodu",
       "color": "green"
     },
     {
       "id": "O7",
       "x": 610,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O7 Príjmy",
+      "text": "7 – Príjmov",
       "color": "green"
     },
     {
       "id": "O8",
       "x": 610,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O8 Výdaje",
+      "text": "8 – Výdajov",
       "color": "green"
     },
     {
       "id": "O9",
       "x": 610,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O9 Evidencia aktív a vybavenia",
+      "text": "9 – Evidencie aktív a vybavenia",
       "color": "green"
     },
     {
       "id": "O10",
       "x": 800,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O10 Služby pre produkciu",
+      "text": "10 – Služieb pre produkciu",
       "color": "green"
     },
     {
       "id": "O11",
       "x": 800,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O11 Sklad",
+      "text": "11 – Skladu",
       "color": "green"
     },
     {
       "id": "O12",
       "x": 800,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O12 Expedícia",
+      "text": "12 – Expedície",
       "color": "green"
     },
     {
       "id": "O13",
       "x": 990,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O13 Kontrola kvality",
+      "text": "13 – Kontroly kvality",
       "color": "green"
     },
     {
       "id": "O14",
       "x": 990,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O14 Zlepšovanie personálu",
+      "text": "14 – Zlepšovania personálu",
       "color": "green"
     },
     {
       "id": "O15",
       "x": 990,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O15 Náprava",
+      "text": "15 – Nápravy",
       "color": "green"
     },
     {
       "id": "O16",
       "x": 1180,
-      "y": 410,
+      "y": 300,
       "w": 170,
       "h": 45,
-      "text": "O16 Informácie pre verejnosť",
+      "text": "16 – Informácií pre verejnosť",
       "color": "green"
     },
     {
       "id": "O17",
       "x": 1180,
-      "y": 465,
+      "y": 355,
       "w": 170,
       "h": 45,
-      "text": "O17 Expanzia",
+      "text": "17 – Expanzie",
       "color": "green"
     },
     {
       "id": "O18",
       "x": 1180,
-      "y": 520,
+      "y": 410,
       "w": 170,
       "h": 45,
-      "text": "O18 Úspech",
+      "text": "18 – Úspechu",
       "color": "green"
     }
   ],
   "edges": [
     {
       "id": "E1",
-      "from": "FOUNDER",
-      "to": "CEO"
-    },
-    {
-      "id": "E2",
-      "from": "CEO",
-      "to": "CAO"
-    },
-    {
-      "id": "E3",
-      "from": "CEO",
-      "to": "CPO"
-    },
-    {
-      "id": "E4",
-      "from": "CEO",
-      "to": "CCO"
-    },
-    {
-      "id": "E5",
-      "from": "CEO",
-      "to": "D7"
-    },
-    {
-      "id": "E6",
-      "from": "CEO",
-      "to": "D1"
-    },
-    {
-      "id": "E7",
-      "from": "CEO",
-      "to": "D2"
-    },
-    {
-      "id": "E8",
-      "from": "CEO",
-      "to": "D3"
-    },
-    {
-      "id": "E9",
-      "from": "CEO",
-      "to": "D4"
-    },
-    {
-      "id": "E10",
-      "from": "CEO",
-      "to": "D5"
-    },
-    {
-      "id": "E11",
-      "from": "CEO",
-      "to": "D6"
-    },
-    {
-      "id": "E12",
       "from": "D7",
       "to": "O21"
     },
     {
-      "id": "E13",
+      "id": "E2",
       "from": "D7",
       "to": "O20"
     },
     {
-      "id": "E14",
+      "id": "E3",
       "from": "D7",
       "to": "O19"
     },
     {
-      "id": "E15",
+      "id": "E4",
       "from": "D1",
       "to": "O1"
     },
     {
-      "id": "E16",
+      "id": "E5",
       "from": "D1",
       "to": "O2"
     },
     {
-      "id": "E17",
+      "id": "E6",
       "from": "D1",
       "to": "O3"
     },
     {
-      "id": "E18",
+      "id": "E7",
       "from": "D2",
       "to": "O4"
     },
     {
-      "id": "E19",
+      "id": "E8",
       "from": "D2",
       "to": "O5"
     },
     {
-      "id": "E20",
+      "id": "E9",
       "from": "D2",
       "to": "O6"
     },
     {
-      "id": "E21",
+      "id": "E10",
       "from": "D3",
       "to": "O7"
     },
     {
-      "id": "E22",
+      "id": "E11",
       "from": "D3",
       "to": "O8"
     },
     {
-      "id": "E23",
+      "id": "E12",
       "from": "D3",
       "to": "O9"
     },
     {
-      "id": "E24",
+      "id": "E13",
       "from": "D4",
       "to": "O10"
     },
     {
-      "id": "E25",
+      "id": "E14",
       "from": "D4",
       "to": "O11"
     },
     {
-      "id": "E26",
+      "id": "E15",
       "from": "D4",
       "to": "O12"
     },
     {
-      "id": "E27",
+      "id": "E16",
       "from": "D5",
       "to": "O13"
     },
     {
-      "id": "E28",
+      "id": "E17",
       "from": "D5",
       "to": "O14"
     },
     {
-      "id": "E29",
+      "id": "E18",
       "from": "D5",
       "to": "O15"
     },
     {
-      "id": "E30",
+      "id": "E19",
       "from": "D6",
       "to": "O16"
     },
     {
-      "id": "E31",
+      "id": "E20",
       "from": "D6",
       "to": "O17"
     },
     {
-      "id": "E32",
+      "id": "E21",
       "from": "D6",
       "to": "O18"
     }
   ],
-  "updated_at": "2026-08-08T10:54:07.856198+00:00",
+  "updated_at": "2026-08-08T10:59:09.301859+00:00",
   "updated_by": "claude"
 }
