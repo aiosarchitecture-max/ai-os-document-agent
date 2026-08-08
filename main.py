@@ -37,6 +37,7 @@ GITHUB_API_BASE = "https://api.github.com"
 
 CANVAS_STATE_PATH = "claude_canvas/canvas_state.json"
 CANVAS_SNAPSHOT_PATH = "claude_canvas/canvas_snapshot.json"
+ORGCHART_STATE_PATH = "claude_canvas/orgchart_state.json"
 
 SERPER_API_KEY = os.getenv("SERPER_API_KEY", "").strip()
 SERPER_MONTHLY_LIMIT = int(os.getenv("SERPER_MONTHLY_LIMIT", "2500"))
@@ -117,6 +118,8 @@ SAFE_TOOL_REGISTRY: List[Dict[str, Any]] = [
     {"name": "aios_create_task", "description": "CAP-020 — Vytvorí novú úlohu v AI_OS_TASKS (spracuje ju Cron Worker do ~10 min). Aj mobilný formulár na /tasks/new.", "method": "POST", "path": "/tasks/create?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_canvas_get", "description": "CAP-023 — Načíta aktuálny stav živého plátna (uzly/hrany).", "method": "GET", "path": "/canvas/state?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
     {"name": "aios_canvas_save", "description": "CAP-023 — Uloží kompletný stav živého plátna (uzly/hrany).", "method": "POST", "path": "/canvas/state?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
+    {"name": "aios_orgchart_get", "description": "CAP-024 — Načíta aktuálny stav organizačného stromu (id/parentId/name/desc).", "method": "GET", "path": "/orgchart/state?token=API_TOKEN", "risk": "low", "requires_human_approval": False},
+    {"name": "aios_orgchart_save", "description": "CAP-024 — Uloží kompletný organizačný strom.", "method": "POST", "path": "/orgchart/state?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
     {"name": "aios_append_to_doc", "description": "Dopíše text na koniec existujúceho Google Docu v povolenom priestore AI_OS.", "method": "POST", "path": "/documents/append?token=API_TOKEN", "risk": "medium", "requires_human_approval": False},
 ]
 
@@ -707,6 +710,63 @@ def canvas_save_snapshot(snapshot: Dict[str, Any]) -> Dict[str, Any]:
     if result.get("status") != "success":
         return {"status": "error", "human": result.get("human", "Uloženie snapshotu zlyhalo.")}
     return {"status": "success", "human": "Snapshot plátna uložený (plná vernosť: šípky, skupiny, všetky tvary)."}
+
+def _default_orgchart_state() -> List[Dict[str, Any]]:
+    return [
+        {"id": "ZAKL", "parentId": None, "name": "Zakladateľ, zdroj, majiteľ", "desc": ""},
+        {"id": "CEO", "parentId": "ZAKL", "name": "CEO (Chief Executive Officer)", "desc": ""},
+        {"id": "CAO", "parentId": "CEO", "name": "CAO – Administration Officer", "desc": ""},
+        {"id": "CPO", "parentId": "CEO", "name": "CPO – Production Officer", "desc": ""},
+        {"id": "CCO", "parentId": "CEO", "name": "CCO – Communication Officer", "desc": ""},
+        {"id": "D7", "parentId": "CEO", "name": "Sekcia 7. Riadenie", "desc": "Táto divízia koordinuje a kontroluje aktivity organizácie s cieľom plynulo fungovať, životaschopne produkovať a dodávať produkty a služby jednotlivcom a spoločnosti vo vysokej kvalite."},
+        {"id": "D1", "parentId": "CEO", "name": "Sekcia 1. Administratíva a komunikácia", "desc": "Táto divízia je plne zodpovedná za založenie organizácie."},
+        {"id": "D2", "parentId": "CEO", "name": "Sekcia 2. Marketing a predaj", "desc": "Táto divízia zabezpečuje, aby produkty a služby organizácie boli široko známe a žiadané, vytvára široké pole verejnosti, ktoré si ich kupuje."},
+        {"id": "D3", "parentId": "CEO", "name": "Sekcia 3. Financie", "desc": "Táto divízia vedie finančné záležitosti, aktíva a vybavenie organizácie tak, aby bolo o jej hmotné zariadenie plne postarané, čím jej umožní vyrábať produkty, dodávať služby a zachovávať si solventnosť."},
+        {"id": "D4", "parentId": "CEO", "name": "Sekcia 4. Produkcia", "desc": "Táto divízia vyrába, pripravuje produkty a poskytuje služby vynikajúcej kvality a neodkladne ich dodáva verejnosti."},
+        {"id": "D5", "parentId": "CEO", "name": "Sekcia 5. Kvalita", "desc": "Táto divízia dohliada na to, aby mal každý produkt opúšťajúci organizáciu očakávanú úroveň kvality."},
+        {"id": "D6", "parentId": "CEO", "name": "Sekcia 6. Informovanie verejnosti (PR)", "desc": "Táto divízia prostredníctvom všetkých svojich aktivít dáva služby a produkty organizácie do povedomia a distribuuje ich širokej verejnosti."},
+        {"id": "O21", "parentId": "D7", "name": "21 – Kancelária zdroja", "desc": ""},
+        {"id": "O20", "parentId": "D7", "name": "20 – Špeciálnych záležitostí", "desc": ""},
+        {"id": "O19", "parentId": "D7", "name": "19 – Kancelária CEO", "desc": ""},
+        {"id": "O1", "parentId": "D1", "name": "1 – Smerovania procesov a personálu", "desc": ""},
+        {"id": "O2", "parentId": "D1", "name": "2 – Komunikácií", "desc": ""},
+        {"id": "O3", "parentId": "D1", "name": "3 – Inšpekcie, správ a štatistík", "desc": ""},
+        {"id": "O4", "parentId": "D2", "name": "4 – Marketingu a propagácie", "desc": ""},
+        {"id": "O5", "parentId": "D2", "name": "5 – Publikácií a vzťahov so zákazníkmi", "desc": ""},
+        {"id": "O6", "parentId": "D2", "name": "6 – Predaja a analýz obchodu", "desc": ""},
+        {"id": "O7", "parentId": "D3", "name": "7 – Príjmov", "desc": ""},
+        {"id": "O8", "parentId": "D3", "name": "8 – Výdajov", "desc": ""},
+        {"id": "O9", "parentId": "D3", "name": "9 – Evidencie aktív a vybavenia", "desc": ""},
+        {"id": "O10", "parentId": "D4", "name": "10 – Služieb pre produkciu", "desc": ""},
+        {"id": "O11", "parentId": "D4", "name": "11 – Skladu", "desc": ""},
+        {"id": "O12", "parentId": "D4", "name": "12 – Expedície", "desc": ""},
+        {"id": "O13", "parentId": "D5", "name": "13 – Kontroly kvality", "desc": ""},
+        {"id": "O14", "parentId": "D5", "name": "14 – Zlepšovania personálu", "desc": ""},
+        {"id": "O15", "parentId": "D5", "name": "15 – Nápravy", "desc": ""},
+        {"id": "O16", "parentId": "D6", "name": "16 – Informácií pre verejnosť", "desc": ""},
+        {"id": "O17", "parentId": "D6", "name": "17 – Expanzie", "desc": ""},
+        {"id": "O18", "parentId": "D6", "name": "18 – Úspechu", "desc": ""},
+    ]
+
+def orgchart_get_state() -> List[Dict[str, Any]]:
+    raw = github_read_file(ORGCHART_STATE_PATH)
+    if raw is None:
+        return _default_orgchart_state()
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return _default_orgchart_state()
+    if not isinstance(data, list):
+        return _default_orgchart_state()
+    return data
+
+def orgchart_save_state(nodes: List[Dict[str, Any]], updated_by: str) -> Dict[str, Any]:
+    content = json.dumps(nodes, ensure_ascii=False, indent=2)
+    result = github_write_file(ORGCHART_STATE_PATH, content, f"Orgchart update by {updated_by}")
+    if result.get("status") != "success":
+        return {"status": "error", "human": result.get("human", "Uloženie organizačného stromu zlyhalo.")}
+    return {"status": "success", "human": f"Organizačný strom uložený ({len(nodes)} uzlov).", "nodes": nodes}
+
 
 # =====================================================
 # MINIMALNY, AUTOMATICKY SCHVALUJUCI OAuth "OBAL"
@@ -1433,6 +1493,214 @@ boot();
 """
     return Response(content=js, media_type="application/javascript; charset=utf-8")
 
+@app.get("/orgchart/state")
+def orgchart_state_get(request: Request, token: Optional[str] = None):
+    debug = wants_debug(request)
+    if not token_ok(token):
+        return unauthorized(debug)
+    nodes = orgchart_get_state()
+    return JSONResponse({"status": "success", "nodes": nodes})
+
+@app.get("/orgchart")
+def orgchart_page(token: Optional[str] = None):
+    token_value = token or ""
+    html = f"""<!doctype html><html lang="sk"><head><meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>AI_OS — Organizačný strom</title>
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-org-chart@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3-flextree@2.1.2/build/d3-flextree.js"></script>
+<style>
+html,body{{margin:0;height:100%;font-family:-apple-system,Arial,sans-serif}}
+#toolbar{{position:fixed;top:0;left:0;right:0;height:48px;background:white;border-bottom:1px solid #e5e7eb;display:flex;align-items:center;gap:10px;padding:0 16px;z-index:1000}}
+#toolbar h1{{font-size:14px;margin:0;font-weight:700;color:#111827}}
+#toolbar .status{{font-size:12px;color:#6b7280}}
+.chart-container{{position:fixed;top:48px;left:0;right:0;bottom:0;overflow:auto}}
+#detail-panel{{position:fixed;top:48px;right:0;bottom:0;width:320px;background:white;border-left:1px solid #e5e7eb;padding:16px;box-shadow:-2px 0 8px rgba(0,0,0,0.05);z-index:900;display:none;overflow:auto}}
+#detail-panel h2{{font-size:15px;margin:0 0 8px 0;color:#111827}}
+#detail-panel p{{font-size:13px;color:#374151;white-space:pre-wrap;line-height:1.5}}
+#detail-panel button{{background:#111827;color:white;border:0;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer;margin-bottom:12px}}
+#diag{{position:fixed;top:48px;left:0;right:0;bottom:0;padding:20px;font-family:monospace;font-size:14px;white-space:pre-wrap;background:white;overflow:auto;z-index:1}}
+#diag .ok{{color:#166534}}
+#diag .fail{{color:#991b1b;font-weight:700}}
+</style>
+</head>
+<body>
+<div id="toolbar">
+  <h1>AI_OS — Organizačný strom (CAP-024)</h1>
+  <span id="statusText" class="status"></span>
+</div>
+<div id="diag">Kontrolujem pripojenie... (toto zmizne, ak je všetko v poriadku)\n</div>
+<div class="chart-container"></div>
+<div id="detail-panel">
+  <button onclick="document.getElementById('detail-panel').style.display='none'">Zavrieť</button>
+  <h2 id="detail-name"></h2>
+  <p id="detail-desc"></p>
+</div>
+<script>window.__AIOS_TOKEN__ = {json.dumps(token_value)};</script>
+<script>
+(function() {{
+  var diag = document.getElementById('diag');
+  function line(text, cls) {{
+    var span = document.createElement('div');
+    if (cls) span.className = cls;
+    span.textContent = text;
+    diag.appendChild(span);
+  }}
+  var urls = [
+    ['d3.v7 (d3js.org)', 'https://d3js.org/d3.v7.min.js'],
+    ['d3-org-chart (jsdelivr)', 'https://cdn.jsdelivr.net/npm/d3-org-chart@3'],
+    ['d3-flextree (jsdelivr)', 'https://cdn.jsdelivr.net/npm/d3-flextree@2.1.2/build/d3-flextree.js']
+  ];
+  diag.textContent = '';
+  line('Kontrolujem, či sa dajú stiahnuť potrebné súbory z internetu:');
+  urls.forEach(function(pair) {{
+    fetch(pair[1], {{ method: 'GET', mode: 'cors' }})
+      .then(function(r) {{ line((r.ok ? '✅ OK ' : '❌ CHYBA (' + r.status + ') ') + pair[0], r.ok ? 'ok' : 'fail'); }})
+      .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) ' + pair[0] + ' — ' + e.message, 'fail'); }});
+  }});
+  line((typeof d3 !== 'undefined' ? '✅ OK ' : '❌ CHYBA ') + 'globálny objekt d3 je k dispozícii', (typeof d3 !== 'undefined') ? 'ok' : 'fail');
+  line((typeof d3 !== 'undefined' && typeof d3.OrgChart !== 'undefined' ? '✅ OK ' : '❌ CHYBA ') + 'd3.OrgChart je k dispozícii', (typeof d3 !== 'undefined' && typeof d3.OrgChart !== 'undefined') ? 'ok' : 'fail');
+  fetch('/orgchart/app.js?token=' + encodeURIComponent(window.__AIOS_TOKEN__ || ''))
+    .then(function(r) {{ return r.text().then(function(t) {{ return {{ok: r.ok, status: r.status, len: t.length, head: t.slice(0, 80)}}; }}); }})
+    .then(function(info) {{ line((info.ok ? '✅ OK ' : '❌ CHYBA (' + info.status + ') ') + '/orgchart/app.js (' + info.len + ' znakov, začína: ' + info.head.replace(/\\n/g, ' ') + ')', info.ok ? 'ok' : 'fail'); }})
+    .catch(function(e) {{ line('❌ CHYBA (nedosiahnuteľné) /orgchart/app.js — ' + e.message, 'fail'); }});
+  window.addEventListener('error', function(e) {{
+    line('❌ GLOBÁLNA chyba (mimo app.js): ' + (e.message || e.error) + (e.filename ? ' [' + e.filename + ':' + e.lineno + ']' : ''), 'fail');
+  }});
+  window.addEventListener('unhandledrejection', function(e) {{
+    line('❌ GLOBÁLNA chyba (promise, mimo app.js): ' + (e.reason && e.reason.message ? e.reason.message : e.reason), 'fail');
+  }});
+  window.__AIOS_APP_BOOTED__ = false;
+  setTimeout(function() {{
+    if (!window.__AIOS_APP_BOOTED__) {{
+      line('');
+      line('⚠️ Aplikácia (app.js) sa nespustila do 8 sekúnd. Skopíruj CELÝ tento text a pošli ho Claudovi.', 'fail');
+    }}
+  }}, 8000);
+  var appScript = document.createElement('script');
+  appScript.src = '/orgchart/app.js';
+  appScript.onerror = function() {{ line('❌ Prehliadač odmietol spustiť /orgchart/app.js (script onerror).', 'fail'); }};
+  document.body.appendChild(appScript);
+}})();
+</script>
+</body></html>"""
+    return HTMLResponse(html)
+
+@app.get("/orgchart/app.js")
+def orgchart_app_js():
+    js = """
+function diagLog(text, isError) {
+  const diag = document.getElementById('diag');
+  if (!diag) return;
+  if (diag.style.display === 'none') diag.style.display = 'block';
+  const span = document.createElement('div');
+  span.className = isError ? 'fail' : 'ok';
+  span.textContent = text;
+  diag.appendChild(span);
+}
+
+function getToken() {
+  const p = new URLSearchParams(window.location.search);
+  return p.get('token') || window.__AIOS_TOKEN__ || '';
+}
+
+function setStatus(text) {
+  const el = document.getElementById('statusText');
+  if (el) el.textContent = text;
+}
+
+function showDetail(d) {
+  const panel = document.getElementById('detail-panel');
+  const nameEl = document.getElementById('detail-name');
+  const descEl = document.getElementById('detail-desc');
+  if (!panel || !nameEl || !descEl) return;
+  nameEl.textContent = d.name || '';
+  descEl.textContent = d.desc || '(bez popisu)';
+  panel.style.display = 'block';
+}
+
+async function boot() {
+  window.__AIOS_APP_BOOTED__ = true;
+  diagLog('');
+  diagLog('Načítavam organizačný strom...');
+
+  if (typeof d3 === 'undefined' || typeof d3.OrgChart === 'undefined') {
+    diagLog('❌ d3.OrgChart nie je k dispozícii (knižnice sa nenačítali).', true);
+    setStatus('❌ Knižnice sa nenačítali.');
+    return;
+  }
+  diagLog('✅ d3.OrgChart je k dispozícii');
+
+  let nodes = [];
+  try {
+    const res = await fetch('/orgchart/state?token=' + encodeURIComponent(getToken()) + '&debug=true');
+    const data = await res.json();
+    if (data && data.status === 'success' && Array.isArray(data.nodes)) {
+      nodes = data.nodes;
+      diagLog('✅ Načítaných ' + nodes.length + ' uzlov zo servera');
+    } else {
+      diagLog('❌ Server nevrátil platné dáta org stromu: ' + JSON.stringify(data).slice(0, 200), true);
+      setStatus('❌ Nepodarilo sa načítať dáta.');
+      return;
+    }
+  } catch (e) {
+    diagLog('❌ Nepodarilo sa načítať /orgchart/state: ' + (e && e.message ? e.message : e), true);
+    setStatus('❌ Nepodarilo sa načítať dáta.');
+    return;
+  }
+
+  try {
+    new d3.OrgChart()
+      .container('.chart-container')
+      .data(nodes)
+      .nodeId((d) => d.id)
+      .parentNodeId((d) => d.parentId)
+      .nodeWidth(() => 220)
+      .nodeHeight(() => 60)
+      .compact(false)
+      .nodeContent((d) => '<div style="padding:8px;border-radius:8px;background:#fff;border:1px solid #ccc;font-size:12px;"><b>' + (d.data.name || '') + '</b></div>')
+      .onNodeClick((d) => {
+        showDetail(d.data);
+      })
+      .render();
+    diagLog('✅ Organizačný strom vykreslený (' + nodes.length + ' uzlov)');
+    setStatus('✅ Načítané (' + nodes.length + ' uzlov)');
+    const diagEl = document.getElementById('diag');
+    if (diagEl) diagEl.style.display = 'none';
+  } catch (e) {
+    diagLog('❌ Vykreslenie org stromu zlyhalo: ' + (e && e.stack ? e.stack : e), true);
+    setStatus('❌ Vykreslenie zlyhalo: ' + (e && e.message ? e.message : e));
+  }
+
+  setInterval(() => {
+    const containerEl = document.querySelector('.chart-container');
+    const looksEmpty = !containerEl || containerEl.children.length === 0;
+    if (looksEmpty) {
+      const d = document.getElementById('diag');
+      if (d && d.dataset.wipedReported !== 'true') {
+        d.dataset.wipedReported = 'true';
+        d.style.display = 'block';
+        const span = document.createElement('div');
+        span.className = 'fail';
+        span.textContent = '⚠️ Org strom potichu zmizol (bez JS chyby) o ' + new Date().toLocaleTimeString() + '. Skopíruj toto Claudovi.';
+        d.appendChild(span);
+      }
+    }
+  }, 2000);
+}
+
+window.addEventListener('error', (e) => {
+  diagLog('❌ Chyba skriptu: ' + (e.error && e.error.message ? e.error.message : e.message), true);
+});
+window.addEventListener('unhandledrejection', (e) => {
+  diagLog('❌ Chyba (promise): ' + (e.reason && e.reason.message ? e.reason.message : e.reason), true);
+});
+
+boot();
+"""
+    return Response(content=js, media_type="application/javascript; charset=utf-8")
+
 @app.post("/github/write-file")
 async def github_write_file_endpoint(request: Request, token: Optional[str] = None):
     debug = wants_debug(request)
@@ -1555,6 +1823,23 @@ def aios_canvas_save(nodes_json: str, edges_json: str) -> dict:
     if not isinstance(nodes, list) or not isinstance(edges, list):
         return {"status": "error", "message": "nodes_json a edges_json musia byť JSON zoznamy."}
     return canvas_save_state(nodes, edges, "claude")
+
+@mcp.tool()
+def aios_orgchart_get() -> dict:
+    """CAP-024 — Načíta aktuálny stav organizačného stromu (id/parentId/name/desc)."""
+    return {"status": "success", "nodes": orgchart_get_state()}
+
+@mcp.tool()
+def aios_orgchart_save(nodes_json: str) -> dict:
+    """CAP-024 — Uloží kompletný organizačný strom. nodes_json je JSON zoznam objektov {id, parentId, name, desc} (nie čiastočný patch)."""
+    try:
+        nodes = json.loads(nodes_json)
+    except Exception as exc:
+        return {"status": "error", "message": f"Neplatný JSON: {exc}"}
+    if not isinstance(nodes, list):
+        return {"status": "error", "message": "nodes_json musí byť JSON zoznam."}
+    return orgchart_save_state(nodes, "claude")
+
 
 app.mount("/mcp", mcp.streamable_http_app())
 
