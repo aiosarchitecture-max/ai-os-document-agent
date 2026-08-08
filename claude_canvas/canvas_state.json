@@ -3,68 +3,363 @@
     {
       "id": "D1",
       "x": 40,
-      "y": 60,
+      "y": 40,
       "w": 170,
       "h": 70,
-      "text": "D1 Komunikácia (DRAFT)",
+      "text": "D-1 Komunikácia (DRAFT)",
       "color": "amber"
     },
     {
-      "id": "D4",
-      "x": 211,
-      "y": 61,
-      "w": 150,
-      "h": 60,
-      "text": "D4 Produkcia (aktívna)",
-      "color": "green"
-    },
-    {
-      "id": "D5",
-      "x": 398,
-      "y": 63,
-      "w": 150,
-      "h": 60,
-      "text": "D5 Kvalita (aktívna)",
-      "color": "green"
-    },
-    {
-      "id": "D7",
-      "x": 580,
-      "y": 60,
-      "w": 150,
-      "h": 60,
-      "text": "D7 Riadenie (aktívne)",
-      "color": "green"
-    },
-    {
       "id": "D2",
-      "x": 130,
-      "y": 200,
+      "x": 230,
+      "y": 40,
       "w": 170,
       "h": 70,
-      "text": "D2 Šírenie (nezačaté)",
+      "text": "D-2 Šírenie (nezačaté)",
       "color": "amber"
     },
     {
       "id": "D3",
-      "x": 330,
-      "y": 200,
+      "x": 420,
+      "y": 40,
       "w": 170,
       "h": 70,
-      "text": "D3 Financie (nezačaté)",
+      "text": "D-3 Financie (nezačaté)",
       "color": "amber"
     },
     {
-      "id": "D6",
-      "x": 530,
-      "y": 200,
+      "id": "D4",
+      "x": 610,
+      "y": 40,
       "w": 170,
       "h": 70,
-      "text": "D6 Verejnosť (nezačaté)",
+      "text": "D-4 Produkcia (aktívna)",
+      "color": "green"
+    },
+    {
+      "id": "D5",
+      "x": 800,
+      "y": 40,
+      "w": 170,
+      "h": 70,
+      "text": "D-5 Kvalita (aktívna)",
+      "color": "green"
+    },
+    {
+      "id": "D6",
+      "x": 990,
+      "y": 40,
+      "w": 170,
+      "h": 70,
+      "text": "D-6 Distribúcia/Verejnosť (nezačaté)",
       "color": "amber"
+    },
+    {
+      "id": "D7",
+      "x": 1180,
+      "y": 40,
+      "w": 170,
+      "h": 70,
+      "text": "D-7 Riadenie (aktívne)",
+      "color": "green"
+    },
+    {
+      "id": "O1",
+      "x": 40,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O1 Personál a smerovanie",
+      "color": "amber"
+    },
+    {
+      "id": "O2",
+      "x": 40,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O2 Komunikácia",
+      "color": "amber"
+    },
+    {
+      "id": "O3",
+      "x": 40,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O3 Inšpekcie, reporty a štatistiky",
+      "color": "amber"
+    },
+    {
+      "id": "O4",
+      "x": 230,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O4 Prieskum a podklady",
+      "color": "amber"
+    },
+    {
+      "id": "O5",
+      "x": 230,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O5 Propagácia a produktový obsah (skill hotový)",
+      "color": "green"
+    },
+    {
+      "id": "O6",
+      "x": 230,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O6 Registrácia a konverzia záujemcov",
+      "color": "amber"
+    },
+    {
+      "id": "O7",
+      "x": 420,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O7 Financie a cashflow",
+      "color": "amber"
+    },
+    {
+      "id": "O8",
+      "x": 420,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O8 Zdroje a nákup",
+      "color": "amber"
+    },
+    {
+      "id": "O9",
+      "x": 420,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O9 Výmena a odmeňovanie",
+      "color": "amber"
+    },
+    {
+      "id": "O10",
+      "x": 610,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O10 Dizajn produktu",
+      "color": "amber"
+    },
+    {
+      "id": "O11",
+      "x": 610,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O11 Výroba",
+      "color": "amber"
+    },
+    {
+      "id": "O12",
+      "x": 610,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O12 Dodanie",
+      "color": "amber"
+    },
+    {
+      "id": "O13",
+      "x": 800,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O13 Kontrola kvality",
+      "color": "amber"
+    },
+    {
+      "id": "O14",
+      "x": 800,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O14 Klobúky a tréning",
+      "color": "amber"
+    },
+    {
+      "id": "O15",
+      "x": 800,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O15 Korekcie a štandardizácia",
+      "color": "amber"
+    },
+    {
+      "id": "O16",
+      "x": 990,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O16 Distribučné kanály",
+      "color": "amber"
+    },
+    {
+      "id": "O17",
+      "x": 990,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O17 PR a povedomie u nového publika",
+      "color": "amber"
+    },
+    {
+      "id": "O18",
+      "x": 990,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O18 Expanzia a odporúčací program",
+      "color": "amber"
+    },
+    {
+      "id": "O19",
+      "x": 1180,
+      "y": 150,
+      "w": 170,
+      "h": 50,
+      "text": "O19 Účel, stratégia, plánovanie",
+      "color": "amber"
+    },
+    {
+      "id": "O20",
+      "x": 1180,
+      "y": 210,
+      "w": 170,
+      "h": 50,
+      "text": "O20 Koordinácia divízií",
+      "color": "amber"
+    },
+    {
+      "id": "O21",
+      "x": 1180,
+      "y": 270,
+      "w": 170,
+      "h": 50,
+      "text": "O21 Právne/regulačné + Artur (Asistent Zakladateľa, AI)",
+      "color": "green"
     }
   ],
-  "edges": [],
-  "updated_at": "2026-07-28T13:47:24.967455+00:00",
+  "edges": [
+    {
+      "id": "E1",
+      "from": "D1",
+      "to": "O1"
+    },
+    {
+      "id": "E2",
+      "from": "D1",
+      "to": "O2"
+    },
+    {
+      "id": "E3",
+      "from": "D1",
+      "to": "O3"
+    },
+    {
+      "id": "E4",
+      "from": "D2",
+      "to": "O4"
+    },
+    {
+      "id": "E5",
+      "from": "D2",
+      "to": "O5"
+    },
+    {
+      "id": "E6",
+      "from": "D2",
+      "to": "O6"
+    },
+    {
+      "id": "E7",
+      "from": "D3",
+      "to": "O7"
+    },
+    {
+      "id": "E8",
+      "from": "D3",
+      "to": "O8"
+    },
+    {
+      "id": "E9",
+      "from": "D3",
+      "to": "O9"
+    },
+    {
+      "id": "E10",
+      "from": "D4",
+      "to": "O10"
+    },
+    {
+      "id": "E11",
+      "from": "D4",
+      "to": "O11"
+    },
+    {
+      "id": "E12",
+      "from": "D4",
+      "to": "O12"
+    },
+    {
+      "id": "E13",
+      "from": "D5",
+      "to": "O13"
+    },
+    {
+      "id": "E14",
+      "from": "D5",
+      "to": "O14"
+    },
+    {
+      "id": "E15",
+      "from": "D5",
+      "to": "O15"
+    },
+    {
+      "id": "E16",
+      "from": "D6",
+      "to": "O16"
+    },
+    {
+      "id": "E17",
+      "from": "D6",
+      "to": "O17"
+    },
+    {
+      "id": "E18",
+      "from": "D6",
+      "to": "O18"
+    },
+    {
+      "id": "E19",
+      "from": "D7",
+      "to": "O19"
+    },
+    {
+      "id": "E20",
+      "from": "D7",
+      "to": "O20"
+    },
+    {
+      "id": "E21",
+      "from": "D7",
+      "to": "O21"
+    }
+  ],
+  "updated_at": "2026-08-08T07:04:59.095459+00:00",
   "updated_by": "claude"
 }
