@@ -71,6 +71,12 @@ class CreateDocumentRequest(BaseModel):
     content: str = Field(default="", max_length=100000)
 
 
+class AppendDocumentRequest(BaseModel):
+    request_id: str = Field(min_length=8, max_length=200, pattern=r"^[A-Za-z0-9._:-]+$")
+    document_id: str = Field(min_length=10, max_length=200, pattern=r"^[A-Za-z0-9_-]+$")
+    text: str = Field(min_length=1, max_length=100000)
+
+
 class LegacyTaskInput(BaseModel):
     external_id: str = Field(min_length=1, max_length=120)
     status: str = Field(default="NEW", max_length=40)

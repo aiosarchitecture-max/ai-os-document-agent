@@ -12,6 +12,7 @@ from .db import SessionLocal, create_schema, get_db
 from .legacy_migration import run_legacy_task_migration
 from .models import AuditEvent, Task, TaskStatus
 from .schemas import (
+    AppendDocumentRequest,
     AuditEventRead,
     ApprovalRequest,
     CanvasDocumentRead,
@@ -249,6 +250,17 @@ async def apps_script_create_document(data: CreateDocumentRequest) -> dict:
     )
 
 
+@app.post("/docs/append", dependencies=[Depends(require_api_token)])
+@app.post("/integrations/apps-script/documents/append", dependencies=[Depends(require_api_token)])
+async def apps_script_append_document(data: AppendDocumentRequest) -> dict:
+    """Append text to an existing AI_OS Google Doc through the canonical bridge."""
+    return await call_apps_script(
+        "APPEND_DOC",
+        {"documentId": data.document_id, "text": data.text},
+        request_id=data.request_id,
+    )
+
+
 @app.get(
     "/integrations/apps-script/documents/{document_id}",
     dependencies=[Depends(require_api_token)],
@@ -270,5 +282,6 @@ def boot() -> dict:
         "version": settings.version,
         "architecture": "modular-postgres",
         "workflow": ["NEW", "RESEARCH", "CREATION", "OPPOSITION", "REVIEW", "APPROVAL", "DONE"],
+        "capabilities": ["APPEND_TO_DOC"],
         "compatibility": "Legacy bridge remains available during migration",
     }
