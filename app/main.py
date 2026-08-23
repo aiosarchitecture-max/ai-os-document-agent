@@ -76,7 +76,8 @@ def root() -> dict:
     return {"system": "AI_OS", "status": "online", "version": settings.version}
 
 
-@app.get("/health/live")
+@app.get("/version")
+def version() -> dict:\n    """Stable application identity that never depends on PostgreSQL."""\n    return {"status": "ok", "system": "AI_OS", "version": settings.version}\n\n\n@app.get("/health/live")
 def health_live() -> dict:
     """Process-level check that never depends on PostgreSQL."""
     return {
