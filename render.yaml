@@ -13,8 +13,8 @@ services:
     plan: free
     region: frankfurt
     buildCommand: pip install -r requirements.txt
-    startCommand: alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
+    startCommand: python scripts/start_service.py
+    healthCheckPath: /health/live
     envVars:
       - key: PYTHON_VERSION
         value: 3.12.13
@@ -28,6 +28,12 @@ services:
         value: 1
       - key: REQUEST_TIMEOUT_SECONDS
         value: 60
+      - key: DATABASE_CONNECT_TIMEOUT_SECONDS
+        value: 5
+      - key: DATABASE_POOL_TIMEOUT_SECONDS
+        value: 5
+      - key: MIGRATION_TIMEOUT_SECONDS
+        value: 30
       - key: API_TOKEN
         sync: false
       - key: APPS_SCRIPT_WEBAPP_URL
