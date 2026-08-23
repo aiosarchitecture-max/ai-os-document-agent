@@ -80,3 +80,18 @@ def test_render_uses_bounded_start_and_process_liveness():
     assert "MIGRATION_TIMEOUT_SECONDS" in render
     assert "timeout=timeout_seconds" in starter
     assert "os.execvp" in starter
+
+def test_version_contract_never_depends_on_database(monkeypatch):
+    monkeypatch.setattr(
+        main_module,
+        "system_readiness",
+        lambda: (_ for _ in ()).throw(AssertionError("version touched readiness")),
+    )
+    with TestClient(main_module.app) as client:
+        response = client.get("/version")
+    assert response.status_code == 200
+    assert response.json() == {
+        "status": "ok",
+        "system": "AI_OS",
+        "version": main_module.settings.version,
+    }
