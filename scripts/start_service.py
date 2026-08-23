@@ -6,7 +6,6 @@ silent. Data endpoints remain closed through the application's readiness gate.
 
 import os
 import subprocess
-import sys
 
 
 def run_migrations() -> str:
