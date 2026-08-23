@@ -1,0 +1,39 @@
+name: AI_OS post-deployment diagnostic
+on:
+  pull_request:
+    branches:
+      - agent/ai-os-core-rebuild
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Wait for bounded structured health
+        shell: bash
+        run: |
+          set -u
+          base="https://ai-os-core-staging.onrender.com"
+          for attempt in 1 2 3 4 5 6; do
+            echo "attempt=$attempt"
+            live_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output live.json --write-out '%{http_code}' "$base/health/live" || true)"
+            echo "live_http=$live_code"
+            if [ -f live.json ]; then
+              sed -n '1,20p' live.json
+            fi
+            if [ "$live_code" = "200" ] && grep -q '"application":"online"' live.json; then
+              health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output health.json --write-out '%{http_code}' "$base/health" || true)"
+              ready_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output ready.json --write-out '%{http_code}' "$base/health/ready" || true)"
+              echo "health_http=$health_code"
+              sed -n '1,20p' health.json
+              echo "ready_http=$ready_code"
+              sed -n '1,20p' ready.json
+              exit 0
+            fi
+            sleep 30
+          done
+          echo "No bounded structured response after six attempts."
+          exit 1
