@@ -1,0 +1,33 @@
+name: AI_OS status contract post-deployment
+on:
+  pull_request:
+    branches:
+      - agent/ai-os-core-rebuild
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verify application identity and degraded database state
+        shell: bash
+        run: |
+          set -u
+          base="https://ai-os-core-staging.onrender.com"
+          for attempt in 1 2 3 4 5 6; do
+            echo "attempt=$attempt"
+            version_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output version.json --write-out '%{http_code}' "$base/version" || true)"
+            health_code="$(curl --silent --show-error --connect-timeout 10 --max-time 20 --output health.json --write-out '%{http_code}' "$base/health" || true)"
+            echo "version_http=$version_code"
+            [ -f version.json ] && sed -n '1,20p' version.json
+            echo "health_http=$health_code"
+            [ -f health.json ] && sed -n '1,20p' health.json
+            if [ "$version_code" = "200" ] && grep -q '"system":"AI_OS"' version.json && [ "$health_code" = "200" ] && grep -q '"application":"online"' health.json; then
+              exit 0
+            fi
+            sleep 30
+          done
+          exit 1
