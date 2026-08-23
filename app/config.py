@@ -11,6 +11,8 @@ class Settings(BaseSettings):
     version: str = "v3.0.0-foundation"
     environment: str = "development"
     database_url: str = "sqlite:///./aios.db"
+    database_connect_timeout_seconds: int = Field(default=5, ge=1, le=30)
+    database_pool_timeout_seconds: int = Field(default=5, ge=1, le=30)
     api_token: str = ""
     approval_signing_key: str = ""
     apps_script_webapp_url: str = ""
@@ -22,4 +24,3 @@ class Settings(BaseSettings):
 @lru_cache
 def get_settings() -> Settings:
     return Settings()
-
