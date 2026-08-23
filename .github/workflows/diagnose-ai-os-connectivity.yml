@@ -1,0 +1,49 @@
+name: AI_OS connectivity diagnostic
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/diagnose-ai-os-connectivity.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check public AI_OS connection without changes
+        shell: bash
+        run: |
+          set -u
+          host="ai-os-core-staging.onrender.com"
+          target="https://${host}/health"
+          echo "checked_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "target=${target}"
+          echo "dns_begin"
+          getent ahosts "${host}" || true
+          echo "dns_end"
+
+          set +e
+          timeout 20 bash -c "cat < /dev/null > /dev/tcp/${host}/443"
+          tcp_exit=$?
+          set -e
+          echo "tcp_443_exit=${tcp_exit}"
+
+          set +e
+          curl --silent --show-error --location             --connect-timeout 15             --max-time 90             --retry 1             --retry-delay 5             --retry-all-errors             --dump-header response-headers.txt             --output response-body.txt             --write-out "http_code=%{http_code}\nremote_ip=%{remote_ip}\nconnect_seconds=%{time_connect}\ntls_seconds=%{time_appconnect}\ntotal_seconds=%{time_total}\n"             "${target}"
+          curl_exit=$?
+          set -e
+
+          echo "curl_exit=${curl_exit}"
+          echo "response_headers_begin"
+          sed -n '1,30p' response-headers.txt 2>/dev/null || true
+          echo "response_headers_end"
+          echo "response_body_begin"
+          head -c 1500 response-body.txt 2>/dev/null || true
+          echo
+          echo "response_body_end"
+
+          test "${curl_exit}" -eq 0
